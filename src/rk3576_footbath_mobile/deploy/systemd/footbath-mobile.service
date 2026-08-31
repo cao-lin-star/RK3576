@@ -1,0 +1,25 @@
+[Unit]
+Description=Footbath local Wi-Fi mobile mapping and navigation gateway
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=sky
+Group=sky
+SupplementaryGroups=dialout
+EnvironmentFile=/etc/footbath/mobile.env
+WorkingDirectory=/home/sky/rk3576_footbath_ws
+ExecStart=/bin/bash /home/sky/rk3576_footbath_ws/install/rk3576_footbath_mobile/share/rk3576_footbath_mobile/scripts/footbath_mobile_start
+KillSignal=SIGINT
+KillMode=control-group
+SendSIGKILL=yes
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/sky/.ros /home/sky/rk3576_footbath_ws/maps /home/sky/rk3576_footbath_ws/src/rk3576_footbath_navigation/maps
+[Install]
+WantedBy=multi-user.target

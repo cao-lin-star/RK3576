@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+port=${FOOTBATH_CHASSIS_DEBUG_PORT:-/dev/footbath_chassis_debug}
+exec python3 "${script_dir}/footbath_uart4_console.py" --port "$port" "$@"

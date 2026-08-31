@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    # Explore_lite reads the live SLAM occupancy grid. The low lidar belongs in
+    # Nav2 costmaps, not in slam_toolbox's scan matcher during phase one.
+    robot_base_frame: base_footprint
+    costmap_topic: /map
+    costmap_updates_topic: /map_updates
+    return_to_init: false
+    visualize: true
+    planner_frequency: 0.20
+    progress_timeout: 45.0
+    potential_scale: 3.0
+    orientation_scale: 0.0
+    gain_scale: 1.0
+    transform_tolerance: 0.5
+    min_frontier_size: 0.50

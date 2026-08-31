@@ -1,0 +1,30 @@
+vendor: SLAMTEC
+model: RPLIDAR C1
+driver_package: sllidar_ros2
+connection: USB serial
+serial_baudrate: 460800
+scan_mode: Standard
+quantity_purchased: 2
+units:
+  high:
+    device: /dev/footbath_lidar_high
+    frame_id: laser_high_frame
+    topic: /scan_high
+    mount_yaw_rad: 3.1415926536
+    role: SLAM, AMCL, global and local obstacle source
+  low:
+    device: /dev/footbath_lidar_low
+    frame_id: laser_low_frame
+    raw_topic: /scan_low_raw
+    filtered_topic: /scan_low_front
+    mount_yaw_rad: 3.1415926536
+    valid_sector_rad: [1.9634954085, -1.9634954085]
+    self_filter_radius_m: 0.225
+    sensor_offset_xy_m: [0.10, 0.0]
+    role: global and local navigation obstacle source only
+notes:
+  - The C1 arrow points toward robot +X, while sllidar_ros2 publishes that physical direction at raw LaserScan +/-pi; both static TFs therefore use yaw=pi.
+  - The wrapped raw sector from +112.5 degrees through +/-180 to -112.5 degrees is the physical front 135 degrees.
+  - Rear/side returns outside that sector and returns inside the 0.225 m chassis self-filter are replaced with NaN.
+  - SLAM and AMCL must never subscribe to the low lidar topic in phase one.
+  - Bind identical C1 units by unique serial number or physical USB ID_PATH, never ttyUSB order.

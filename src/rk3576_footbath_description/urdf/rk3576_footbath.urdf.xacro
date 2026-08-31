@@ -1,0 +1,110 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rk3576_footbath">
+  <xacro:arg name="base_radius" default="0.22"/>
+  <xacro:arg name="base_height" default="0.50"/>
+  <xacro:arg name="base_link_z" default="0.25"/>
+
+  <xacro:arg name="laser_high_x" default="0.10"/>
+  <xacro:arg name="laser_high_y" default="0.0"/>
+  <xacro:arg name="laser_high_z" default="0.50"/>
+  <xacro:arg name="laser_high_roll" default="0.0"/>
+  <xacro:arg name="laser_high_pitch" default="0.0"/>
+  <xacro:arg name="laser_high_yaw" default="0.0"/>
+  <xacro:arg name="laser_low_x" default="0.10"/>
+  <xacro:arg name="laser_low_y" default="0.0"/>
+  <xacro:arg name="laser_low_z" default="0.15"/>
+  <xacro:arg name="laser_low_roll" default="0.0"/>
+  <xacro:arg name="laser_low_pitch" default="0.0"/>
+  <xacro:arg name="laser_low_yaw" default="0.0"/>
+
+  <xacro:arg name="imu_x" default="0.0"/>
+  <xacro:arg name="imu_y" default="0.0"/>
+  <xacro:arg name="imu_z" default="0.195"/>
+  <xacro:arg name="imu_roll" default="0.0"/>
+  <xacro:arg name="imu_pitch" default="0.0"/>
+  <xacro:arg name="imu_yaw" default="0.0"/>
+
+  <xacro:arg name="tof_left_x" default="0.155563"/>
+  <xacro:arg name="tof_left_y" default="0.155563"/>
+  <xacro:arg name="tof_left_z" default="0.15"/>
+  <xacro:arg name="tof_left_pitch" default="0.0"/>
+  <xacro:arg name="tof_left_yaw" default="0.7853981634"/>
+  <xacro:arg name="tof_right_x" default="0.155563"/>
+  <xacro:arg name="tof_right_y" default="-0.155563"/>
+  <xacro:arg name="tof_right_z" default="0.15"/>
+  <xacro:arg name="tof_right_pitch" default="0.0"/>
+  <xacro:arg name="tof_right_yaw" default="-0.7853981634"/>
+
+  <xacro:arg name="ultrasonic_x" default="0.135"/>
+  <xacro:arg name="ultrasonic_y" default="0.0"/>
+  <xacro:arg name="ultrasonic_z" default="0.24"/>
+  <xacro:arg name="ultrasonic_yaw" default="0.0"/>
+
+  <xacro:property name="base_radius_value" value="$(arg base_radius)"/>
+  <xacro:property name="base_height_value" value="$(arg base_height)"/>
+  <material name="footbath_blue"><color rgba="0.10 0.25 0.90 0.65"/></material>
+  <material name="sensor_black"><color rgba="0.03 0.03 0.03 0.9"/></material>
+
+  <link name="base_footprint"/>
+  <link name="base_link">
+    <visual>
+      <geometry><cylinder radius="${base_radius_value}" length="${base_height_value}"/></geometry>
+      <material name="footbath_blue"/>
+    </visual>
+    <collision><geometry><cylinder radius="${base_radius_value}" length="${base_height_value}"/></geometry></collision>
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.032933" ixy="0" ixz="0" iyy="0.032933" iyz="0" izz="0.0242"/>
+    </inertial>
+  </link>
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="0 0 $(arg base_link_z)" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Sensor coordinates are absolute heights above base_footprint. -->
+  <link name="laser_high_frame">
+    <visual><geometry><cylinder radius="0.0275" length="0.0395"/></geometry><material name="sensor_black"/></visual>
+  </link>
+  <joint name="laser_high_joint" type="fixed">
+    <parent link="base_footprint"/><child link="laser_high_frame"/>
+    <origin xyz="$(arg laser_high_x) $(arg laser_high_y) $(arg laser_high_z)"
+      rpy="$(arg laser_high_roll) $(arg laser_high_pitch) $(arg laser_high_yaw)"/>
+  </joint>
+
+  <link name="laser_low_frame">
+    <visual><geometry><cylinder radius="0.0275" length="0.0395"/></geometry><material name="sensor_black"/></visual>
+  </link>
+  <joint name="laser_low_joint" type="fixed">
+    <parent link="base_footprint"/><child link="laser_low_frame"/>
+    <origin xyz="$(arg laser_low_x) $(arg laser_low_y) $(arg laser_low_z)"
+      rpy="$(arg laser_low_roll) $(arg laser_low_pitch) $(arg laser_low_yaw)"/>
+  </joint>
+
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_footprint"/><child link="imu_link"/>
+    <origin xyz="$(arg imu_x) $(arg imu_y) $(arg imu_z)"
+      rpy="$(arg imu_roll) $(arg imu_pitch) $(arg imu_yaw)"/>
+  </joint>
+
+  <link name="tof_left_link"/>
+  <joint name="tof_left_joint" type="fixed">
+    <parent link="base_footprint"/><child link="tof_left_link"/>
+    <origin xyz="$(arg tof_left_x) $(arg tof_left_y) $(arg tof_left_z)"
+      rpy="0 $(arg tof_left_pitch) $(arg tof_left_yaw)"/>
+  </joint>
+  <link name="tof_right_link"/>
+  <joint name="tof_right_joint" type="fixed">
+    <parent link="base_footprint"/><child link="tof_right_link"/>
+    <origin xyz="$(arg tof_right_x) $(arg tof_right_y) $(arg tof_right_z)"
+      rpy="0 $(arg tof_right_pitch) $(arg tof_right_yaw)"/>
+  </joint>
+
+  <link name="ultrasonic_link"/>
+  <joint name="ultrasonic_joint" type="fixed">
+    <parent link="base_footprint"/><child link="ultrasonic_link"/>
+    <origin xyz="$(arg ultrasonic_x) $(arg ultrasonic_y) $(arg ultrasonic_z)"
+      rpy="0 0 $(arg ultrasonic_yaw)"/>
+  </joint>
+</robot>

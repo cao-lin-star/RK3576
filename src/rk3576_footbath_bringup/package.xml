@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rk3576_footbath_bringup</name>
+  <version>0.1.0</version>
+  <description>RK3576 足浴桶真机一键启动、集中硬件默认值。</description>
+  <maintainer email="sky@example.com">sky</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>rk3576_footbath_description</exec_depend>
+  <exec_depend>rk3576_footbath_base</exec_depend>
+  <exec_depend>rk3576_footbath_lidar</exec_depend>
+  <exec_depend>rk3576_footbath_safety</exec_depend>
+  <exec_depend>rk3576_footbath_exploration</exec_depend>
+  <exec_depend>rk3576_footbath_slam</exec_depend>
+  <exec_depend>rk3576_footbath_navigation</exec_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
+

@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+arm_file=/run/footbath-motion-arm
+env_file=${FOOTBATH_REMOTE_ENV:-/etc/footbath/remote-debug.env}
+max_minutes=30
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo footbath_motion_arm arm --minutes 15 --i-confirm-onsite-emergency-stop
+  sudo footbath_motion_arm status
+  sudo footbath_motion_arm disarm
+
+Arming grants a short lease to footbath_safe_drive and the Foxglove gate. It does not move the
+robot. The STM32 500 ms watchdog and a reachable physical emergency stop remain
+mandatory.
+EOF
+}
+
+[[ ${EUID} -eq 0 ]] || { echo "Run with sudo." >&2; exit 1; }
+action=${1:-status}
+[[ $# -gt 0 ]] && shift
+
+allow=0
+if [[ -r "$env_file" ]]; then
+  allow=$(sed -n 's/^FOOTBATH_ALLOW_REMOTE_MOTION=//p' "$env_file" | tail -n 1)
+fi
+
+case "$action" in
+  arm)
+    minutes=15
+    acknowledged=0
+    while (($#)); do
+      case "$1" in
+        --minutes) [[ $# -ge 2 ]] || exit 2; minutes=$2; shift ;;
+        --i-confirm-onsite-emergency-stop) acknowledged=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+      esac
+      shift
+    done
+    [[ "$allow" == 1 ]] || { echo "Remote motion policy is disabled in $env_file" >&2; exit 1; }
+    [[ "$acknowledged" == 1 ]] || { echo "Physical safety acknowledgement is required." >&2; exit 2; }
+    [[ "$minutes" =~ ^[0-9]+$ ]] || { echo "Minutes must be an integer." >&2; exit 2; }
+    ((minutes >= 1 && minutes <= max_minutes)) || { echo "Minutes must be 1..$max_minutes." >&2; exit 2; }
+    now=$(date +%s)
+    expires=$((now + minutes * 60))
+    printf 'expires_epoch=%s\narmed_by=%s\n' "$expires" "${SUDO_USER:-root}" >"$arm_file"
+    chmod 0644 "$arm_file"
+    echo "ARMED until $(date -d "@$expires" --iso-8601=seconds)"
+    ;;
+  disarm)
+    rm -f -- "$arm_file"
+    echo "DISARMED"
+    ;;
+  status)
+    if [[ ! -r "$arm_file" ]]; then
+      echo "DISARMED"
+      exit 1
+    fi
+    expires=$(sed -n 's/^expires_epoch=//p' "$arm_file" | head -n 1)
+    now=$(date +%s)
+    if [[ ! "$expires" =~ ^[0-9]+$ ]] || ((expires <= now)); then
+      rm -f -- "$arm_file"
+      echo "DISARMED (expired)"
+      exit 1
+    fi
+    echo "ARMED until $(date -d "@$expires" --iso-8601=seconds), remaining=$((expires-now))s"
+    ;;
+  -h|--help) usage ;;
+  *) echo "Unknown action: $action" >&2; usage >&2; exit 2 ;;
+esac

@@ -1,0 +1,28 @@
+ydlidar_node:
+  ros__parameters:
+    # 从旧车日志可靠确认：/dev/ttyUSB0、115200、运行时 model code 12。
+    # TODO_VERIFY_HARDWARE：未可靠确认销售型号，不以 X2/X4/G* 等名称猜测。
+    port: /dev/footbath_lidar
+    baudrate: 115200
+    frame_id: laser_frame
+
+    # 以下是 YDLIDAR ROS2 常用驱动参数；在 RK3576 真机逐项核对。
+    # model_code: 12 仅作为本配置文件名和审计元数据，厂商节点没有统一的 model_code 入参。
+    lidar_type: 1
+    device_type: 0
+    sample_rate: 5
+    abnormal_check_count: 4
+    fixed_resolution: true
+    reversion: false
+    inverted: false
+    auto_reconnect: true
+    isSingleChannel: false
+    intensity: false
+    support_motor_dtr: false
+    angle_max: 180.0
+    angle_min: -180.0
+    range_max: 5.5
+    range_min: 0.10
+    frequency: 10.0
+    invalid_range_is_inf: false
+

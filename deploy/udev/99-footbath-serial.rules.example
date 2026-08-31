@@ -1,0 +1,18 @@
+# Replace every placeholder with values read from the physical RK3576.
+# Both RPLIDAR C1 units use the same VID/PID. Prefer a genuinely unique
+# ID_SERIAL_SHORT. If the units do not expose unique serials, comment the first
+# two rules and enable the ID_PATH examples tied to labelled RK USB sockets.
+# Never depend on ttyUSB enumeration order.
+
+# High RPLIDAR C1 -> /dev/footbath_lidar_high
+SUBSYSTEM=="tty", ATTRS{idVendor}=="LIDAR_VID", ATTRS{idProduct}=="LIDAR_PID", ATTRS{serial}=="HIGH_LIDAR_SERIAL", SYMLINK+="footbath_lidar_high", GROUP="dialout", MODE="0660"
+
+# Low RPLIDAR C1 -> /dev/footbath_lidar_low
+SUBSYSTEM=="tty", ATTRS{idVendor}=="LIDAR_VID", ATTRS{idProduct}=="LIDAR_PID", ATTRS{serial}=="LOW_LIDAR_SERIAL", SYMLINK+="footbath_lidar_low", GROUP="dialout", MODE="0660"
+
+# Physical-port fallback for otherwise indistinguishable C1 units:
+# SUBSYSTEM=="tty", ENV{ID_PATH}=="HIGH_LIDAR_ID_PATH", SYMLINK+="footbath_lidar_high", GROUP="dialout", MODE="0660"
+# SUBSYSTEM=="tty", ENV{ID_PATH}=="LOW_LIDAR_ID_PATH", SYMLINK+="footbath_lidar_low", GROUP="dialout", MODE="0660"
+
+# STM32's on-board UART3_M0 rule is intentionally not duplicated here.
+# install_systemd.sh installs deploy/udev/99-footbath-uart3-m0.rules separately.

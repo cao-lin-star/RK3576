@@ -1,0 +1,32 @@
+stm32_serial_bridge:
+  ros__parameters:
+    serial:
+      # /dev/footbath_stm32 is a udev alias for the on-board UART3_M0
+      # controller (/dev/ttyS3), not a fireDAP or USB-TTL CDC port.
+      port: /dev/footbath_stm32
+      baudrate: 115200
+      reconnect_period_s: 1.0
+    safety:
+      cmd_vel_timeout_s: 0.5
+      heartbeat_timeout_s: 2.0
+      max_linear_mps: 1.00
+      max_angular_rps: 1.50
+      stop_on_fault: true
+    frames:
+      odom: odom
+      base: base_footprint
+      imu: imu_link
+      tof_left: tof_left_link
+      tof_right: tof_right_link
+      ultrasonic: ultrasonic_link
+    topics:
+      cmd_vel: /cmd_vel_selected
+      odom: /odom
+      imu: /imu/data_raw
+      tof_left: /range/tof_left
+      tof_right: /range/tof_right
+      ultrasonic: /range/ultrasonic
+    publish_odom_tf: true
+    odom:
+      pose_covariance_diagonal: [0.02, 0.02, 1000000.0, 1000000.0, 1000000.0, 0.05]
+      twist_covariance_diagonal: [0.03, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 0.08]

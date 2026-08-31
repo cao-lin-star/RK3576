@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Run one bounded loaded PID trial through the F407 UART4 debug port."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+import signal
+import time
+from pathlib import Path
+
+FIELDS = (
+    "t_ms", "tgt_l_mm_s", "tgt_r_mm_s", "spd_l_mm_s", "spd_r_mm_s",
+    "pwm_l_x100", "pwm_r_x100", "enc_l", "enc_r", "odom_v_mm_s",
+    "odom_w_mrad_s", "fault", "valid", "obstacle", "sensor_fault",
+)
+
+
+def parse_tel(line: str) -> dict[str, int] | None:
+    if not line.startswith("TEL,"):
+        return None
+    result: dict[str, int] = {}
+    for item in line[4:].split(","):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        try:
+            result[key] = int(value, 0)
+        except ValueError:
+            return None
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Bounded loaded PID trial with CSV telemetry")
+    parser.add_argument("--port", default="/dev/footbath_chassis_debug")
+    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--kp", type=float, required=True)
+    parser.add_argument("--ki", type=float, required=True)
+    parser.add_argument("--kd", type=float, default=0.0)
+    parser.add_argument("--linear", type=float, default=0.05)
+    parser.add_argument("--angular", type=float, default=0.0)
+    parser.add_argument("--duration", type=float, default=5.0)
+    parser.add_argument("--rate", type=float, default=20.0)
+    parser.add_argument("--output-dir", default="/home/sky/footbath_tuning")
+    parser.add_argument("--restore-kp", type=float, default=0.04)
+    parser.add_argument("--restore-ki", type=float, default=0.002)
+    parser.add_argument("--restore-kd", type=float, default=0.0)
+    parser.add_argument("--i-understand-motors-will-move", action="store_true")
+    args = parser.parse_args()
+
+    if not args.i_understand_motors_will_move:
+        parser.error("pass --i-understand-motors-will-move after clearing the test area")
+    gains = (args.kp, args.ki, args.kd, args.restore_kp, args.restore_ki, args.restore_kd)
+    if any(not math.isfinite(value) or value < 0.0 or value > 10.0 for value in gains):
+        parser.error("all gains must be finite and in 0..10")
+    if abs(args.linear) > 0.20 or abs(args.angular) > 0.80:
+        parser.error("test limits: abs(linear)<=0.20 and abs(angular)<=0.80")
+    if not 0.5 <= args.duration <= 20.0 or not 10.0 <= args.rate <= 50.0:
+        parser.error("duration must be 0.5..20 s and rate 10..50 Hz")
+
+    try:
+        import serial  # type: ignore
+    except ImportError as exc:
+        raise SystemExit("Missing python3-serial") from exc
+
+    stop_requested = False
+
+    def request_stop(_signum: int, _frame: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    csv_path = output_dir / f"loaded_pid_kp{args.kp:g}_ki{args.ki:g}_{stamp}.csv"
+    samples: list[dict[str, int]] = []
+
+    def send(uart: object, command: str) -> None:
+        uart.write((command + "\r\n").encode("ascii"))
+
+    def read_until(uart: object, deadline: float, writer: csv.DictWriter | None = None) -> None:
+        while time.monotonic() < deadline:
+            raw = uart.readline()
+            if not raw:
+                continue
+            line = raw.rstrip(b"\r\n").decode("ascii", errors="replace")
+            tel = parse_tel(line)
+            if tel is None:
+                print(line, flush=True)
+                continue
+            samples.append(tel)
+            if writer is not None:
+                writer.writerow({field: tel.get(field, "") for field in FIELDS})
+
+    with serial.Serial(args.port, args.baud, timeout=0.02) as uart:
+        uart.reset_input_buffer()
+        send(uart, "stream on")
+        send(uart, "stop")
+        send(uart, f"pid both {args.kp:.6f} {args.ki:.6f} {args.kd:.6f}")
+        read_until(uart, time.monotonic() + 0.5)
+        try:
+            with csv_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=FIELDS)
+                writer.writeheader()
+                command = f"vel {args.linear:.6f} {args.angular:.6f}"
+                deadline = time.monotonic() + args.duration
+                next_send = time.monotonic()
+                while not stop_requested and time.monotonic() < deadline:
+                    now = time.monotonic()
+                    if now >= next_send:
+                        send(uart, command)
+                        next_send += 1.0 / args.rate
+                    read_until(uart, min(deadline, now + 0.02), writer)
+        finally:
+            for _ in range(3):
+                send(uart, "stop")
+                time.sleep(0.05)
+            send(
+                uart,
+                f"pid both {args.restore_kp:.6f} {args.restore_ki:.6f} {args.restore_kd:.6f}",
+            )
+            send(uart, "stop")
+            read_until(uart, time.monotonic() + 0.35)
+
+    steady = samples[len(samples) // 2 :]
+    if steady:
+        mean_left = sum(s.get("spd_l_mm_s", 0) for s in steady) / len(steady)
+        mean_right = sum(s.get("spd_r_mm_s", 0) for s in steady) / len(steady)
+        peak_pwm = max(
+            max(abs(s.get("pwm_l_x100", 0)), abs(s.get("pwm_r_x100", 0)))
+            for s in steady
+        ) / 100.0
+        faults = 0
+        for sample in steady:
+            faults |= sample.get("fault", 0)
+        print(
+            f"SUMMARY samples={len(samples)} mean_left={mean_left:.1f}mm/s "
+            f"mean_right={mean_right:.1f}mm/s peak_pwm={peak_pwm:.2f}% "
+            f"fault_or=0x{faults:04X}",
+            flush=True,
+        )
+    else:
+        print("SUMMARY no telemetry received", flush=True)
+    print(f"CSV={csv_path}", flush=True)
+    return 0 if samples else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

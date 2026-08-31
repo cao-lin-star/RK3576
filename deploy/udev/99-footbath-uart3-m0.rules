@@ -1,0 +1,8 @@
+# LubanCat-3IO RK3576 UART3_M0 <-> STM32F407 USART1 formal link.
+# UART3_M0 must first be enabled by the board device-tree overlay; it then
+# appears as /dev/ttyS3.  Keep /dev/footbath_stm32 as the application-facing
+# stable name so ROS configuration is not coupled to a temporary USB adapter.
+SUBSYSTEM=="tty", KERNEL=="ttyS3", SYMLINK+="footbath_stm32", GROUP="dialout", MODE="0660", TAG+="systemd"
+
+# STM32F407 UART4 ASCII debug link, verified on FIREPHX USB SER FX2348N.
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="0843", ENV{ID_MODEL_ID}=="5740", ENV{ID_SERIAL_SHORT}=="FX2348N", SYMLINK+="footbath_chassis_debug", GROUP="dialout", MODE="0660", TAG+="systemd"

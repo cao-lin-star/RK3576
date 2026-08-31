@@ -1,0 +1,124 @@
+platform:
+  board: Wildfire_LubanCat_3_BTB
+  soc: RK3576
+  memory: 8GB
+  storage: 64GB_eMMC
+  os: Ubuntu 22.04
+  ros_distro: humble
+
+robot_geometry:
+  # All sensor poses are measured from base_footprint: x forward, y left, z up.
+  base_radius_m: 0.22
+  base_height_m: 0.50
+  base_link_z_m: 0.25
+  laser_high_x_m: 0.10
+  laser_high_y_m: 0.0
+  laser_high_z_m: 0.50
+  laser_high_roll_rad: 0.0
+  laser_high_pitch_rad: 0.0
+  # sllidar_ros2 publishes the physical C1 arrow direction at raw LaserScan +/-pi.
+  laser_high_yaw_rad: 3.1415926536
+  laser_low_x_m: 0.10
+  laser_low_y_m: 0.0
+  laser_low_z_m: 0.15
+  laser_low_roll_rad: 0.0
+  laser_low_pitch_rad: 0.0
+  laser_low_yaw_rad: 3.1415926536
+  imu_x_m: 0.0
+  imu_y_m: 0.0
+  imu_z_m: 0.195
+  imu_roll_rad: 0.0
+  imu_pitch_rad: 0.0
+  imu_yaw_rad: 0.0
+  tof_left_x_m: 0.155563
+  tof_left_y_m: 0.155563
+  tof_left_z_m: 0.15
+  tof_left_pitch_rad: 0.0
+  tof_left_yaw_rad: 0.7853981634
+  tof_right_x_m: 0.155563
+  tof_right_y_m: -0.155563
+  tof_right_z_m: 0.15
+  tof_right_pitch_rad: 0.0
+  tof_right_yaw_rad: -0.7853981634
+  ultrasonic_x_m: 0.135
+  ultrasonic_y_m: 0.0
+  ultrasonic_z_m: 0.24
+  ultrasonic_yaw_rad: 0.0
+
+kinematics:
+  drive: differential
+  wheel_diameter_m: 0.124
+  wheel_track_m: 0.330  # Nominal measured wheel-centre spacing; verify by multi-turn calibration.
+  encoder_base_ppr: 17
+  gearbox_ratio: 51
+  quadrature_factor: 4
+  counts_per_wheel_revolution: 3468
+  theoretical_distance_per_count_m: 0.000112329149
+
+stm32:
+  mcu: STM32F407ZGT6
+  transport: RK3576_UART3_M0_to_F407_USART1
+  linux_device: /dev/ttyS3
+  device: /dev/footbath_stm32
+  baudrate: 115200
+  protocol_version: 1
+  rk_physical_rx_pin: 3
+  rk_physical_tx_pin: 5
+  rk_ground_pin: 6
+  f407_tx_pin: PA9
+  f407_rx_pin: PA10
+  fire_dap_role: SWD_only
+  motor_driver: 2x_BTS7960
+  cmd_vel_hard_timeout_ms: 500
+
+rplidar_high:
+  vendor: SLAMTEC
+  model: RPLIDAR_C1
+  device: /dev/footbath_lidar_high
+  baudrate: 460800
+  scan_mode: Standard
+  frame_id: laser_high_frame
+  scan_topic: /scan_high
+
+rplidar_low:
+  vendor: SLAMTEC
+  model: RPLIDAR_C1
+  device: /dev/footbath_lidar_low
+  baudrate: 460800
+  scan_mode: Standard
+  frame_id: laser_low_frame
+  raw_scan_topic: /scan_low_raw
+  filtered_scan_topic: /scan_low_front
+  # Wrapped raw LaserScan sector: +112.5..+180 and -180..-112.5 degrees.
+  valid_angle_min_rad: 1.9634954085
+  valid_angle_max_rad: -1.9634954085
+  self_filter_margin_m: 0.005
+
+distance_sensors:
+  tof_count: 2
+  ultrasonic_count: 1
+  exact_tof_protocol: NLink_TOFSense_M_Frame0
+  exact_ultrasonic_protocol: HC-SR04_TRIGGER_ECHO_CS100A
+  front_ultrasonic_hard_stop_enabled: true
+  infrared_hard_stop_enabled: false
+  cliff_hard_stop_enabled: false
+
+imu:
+  model: MPU6050
+  axis_count: 6
+  i2c_address: 0x68
+  note: Use the Wildfire F407 onboard MPU6050; do not parallel an external 0x68 device.
+
+remote_debug:
+  transport: ssh_over_tailscale
+  router_model: USR-G806p
+  router_lan_ipv4: 192.168.8.1
+  rk_lan_ipv4: 192.168.8.10
+  ssh_port: 22
+  ros_domain_id: 0
+  expose_ros_dds: false
+  allow_remote_motion: true
+  requires_temporary_root_owned_arm_lease: true
+  max_remote_linear_mps: 0.20
+  max_remote_angular_rps: 0.80
+  max_remote_command_duration_s: 30

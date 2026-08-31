@@ -1,0 +1,9 @@
+rplidar_c1_high:
+  ros__parameters:
+    channel_type: serial
+    serial_port: /dev/footbath_lidar_high
+    serial_baudrate: 460800
+    frame_id: laser_high_frame
+    inverted: false
+    angle_compensate: true
+    scan_mode: Standard

@@ -1,0 +1,50 @@
+Panels:
+  - Class: rviz_common/Displays
+  - Class: rviz_common/Tool Properties
+  - Class: rviz_common/Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Fixed Frame: map
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+    - Class: rviz_default_plugins/Map
+      Name: Map
+      Enabled: true
+      Topic:
+        Value: /map
+    - Class: rviz_default_plugins/LaserScan
+      Name: HighScanForSLAM
+      Enabled: true
+      Topic:
+        Value: /scan_high
+      Color: 255; 0; 0
+      Size (m): 0.02
+    - Class: rviz_default_plugins/LaserScan
+      Name: LowFrontFiltered
+      Enabled: true
+      Topic:
+        Value: /scan_low_front
+      Color: 0; 170; 255
+      Size (m): 0.025
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Measure
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Scale: 60
+Window Geometry:
+  Width: 1280
+  Height: 800

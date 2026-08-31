@@ -1,0 +1,36 @@
+exploration_supervisor:
+  ros__parameters:
+    auto_start: true
+    startup_timeout_s: 60.0
+    minimum_startup_hold_s: 3.0
+    healthy_cycles_required: 5
+    supervision_period_s: 0.2
+    pause_republish_s: 1.0
+    max_exploration_duration_s: 1800.0
+
+    freshness:
+      scan_s: 1.0
+      map_s: 5.0
+      odom_s: 1.0
+
+    topics:
+      high_scan: /scan_high
+      map: /map
+      odom: /odom
+      explore_status: /explore/status
+      explore_resume: /explore/resume
+      # This must feed the dedicated <=0.20 m/s automatic command limiter,
+      # never the high-speed manual-control input.
+      auto_stop_cmd: /cmd_vel
+      auto_motion_lease: /safety/auto_motion_lease
+      diagnostics: /diagnostics
+
+    services:
+      cancel_navigation: /navigate_to_pose/_action/cancel_goal
+      slam_save_map: /slam_toolbox/save_map
+      slam_serialize_map: /slam_toolbox/serialize_map
+
+    save_on_complete: true
+    save_on_timeout: true
+    serialize_pose_graph: true
+    map_output_prefix: /home/sky/rk3576_footbath_ws/maps/footbath_auto_%Y%m%d_%H%M%S

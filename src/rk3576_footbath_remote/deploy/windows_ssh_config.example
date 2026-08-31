@@ -1,0 +1,16 @@
+Host footbath-rk-lan
+    HostName 192.168.8.10
+    User sky
+    IdentityFile ~/.ssh/id_ed25519_footbath
+    IdentitiesOnly yes
+    ServerAliveInterval 20
+    ServerAliveCountMax 3
+
+# Install Tailscale on Windows and RK3576, then keep this hostname in the tailnet.
+Host footbath-rk-remote
+    HostName lubancat3-footbath
+    User sky
+    IdentityFile ~/.ssh/id_ed25519_footbath
+    IdentitiesOnly yes
+    ServerAliveInterval 20
+    ServerAliveCountMax 3

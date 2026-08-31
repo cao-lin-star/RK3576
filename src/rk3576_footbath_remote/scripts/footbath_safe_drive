@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -eo pipefail
+# Source ROS before enabling nounset; Humble setup reads optional variables.
+source /opt/ros/humble/setup.bash
+if [[ -r /home/sky/rk3576_footbath_ws/install/setup.bash ]]; then
+  source /home/sky/rk3576_footbath_ws/install/setup.bash
+fi
+set -u
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "${script_dir}/footbath_safe_drive.py" "$@"

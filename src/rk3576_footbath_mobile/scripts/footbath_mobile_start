@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+set +u
+source /opt/ros/humble/setup.bash
+source /home/sky/rk3576_footbath_ws/install/setup.bash
+set -u
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+exec ros2 run rk3576_footbath_mobile footbath_mobile_gateway

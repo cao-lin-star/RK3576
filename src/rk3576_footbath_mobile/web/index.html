@@ -1,0 +1,18 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>足浴桶移动控制</title><link rel="stylesheet" href="/style.css"></head><body>
+<header><h1>智能足浴桶</h1><span id="link">未登录</span></header>
+<section id="login" class="card"><h2>本地控制登录</h2><input id="pin" type="password" inputmode="numeric" placeholder="至少6位控制PIN"><button id="loginBtn">登录</button><p>仅允许连接G806P Wi-Fi的现场手机访问。</p></section>
+<main id="app" hidden>
+<section class="card status"><div><b>模式</b><span id="modeText">idle</span></div><div><b>底盘/里程计</b><span id="odom">--</span></div><div><b>高位雷达</b><span id="scan">--</span></div><div><b>地图</b><span id="mapHealth">--</span></div><div><b>定位</b><span id="localization">未设置</span></div><div><b>导航</b><span id="navStatus">未运行</span></div></section>
+<section class="card safetyActions"><button id="emergencyStop" class="danger emergency" type="button">网页急停（结束当前任务）</button><p id="actionFeedback" class="hint" role="status">自动任务由 RK 本地监督器维持；手机断线不会取消。手动遥控断线仍会在 300 ms 内停车。</p></section>
+<nav><button data-tab="map" class="active">地图</button><button data-tab="manual">手动建图</button><button data-tab="auto">自动建图</button><button data-tab="nav">自动导航</button><button data-tab="mapsManage">地图管理</button></nav>
+<section id="map" class="tab card">
+<div class="mapTools" aria-label="地图视图控制"><button id="zoomOut" type="button">缩小 −</button><button id="zoomIn" type="button">放大 ＋</button><button id="rotateLeft" type="button">左转 ↺</button><button id="rotateRight" type="button">右转 ↻</button><button id="resetView" type="button">复位</button><span id="viewText">100% / 0°</span></div>
+<div class="canvasWrap"><canvas id="canvas"></canvas></div>
+<p id="mapPickHint" class="hint">红色箭头是小车当前位置。普通状态可拖动地图；设置位姿时请按住地图并沿车头方向拖动。</p>
+<p id="mapInfo">等待地图...</p><button id="refreshMap">刷新地图</button>
+</section>
+<section id="manual" class="tab card" hidden><h2>手动建图</h2><button id="startMapping">启动手动建图</button><button id="saveManual">保存当前地图</button><div class="joy"><button data-v="0.30,0">前进</button><div><button data-v="0,0.5">左转</button><button class="stop" data-v="0,0">停止</button><button data-v="0,-0.5">右转</button></div><button data-v="-0.30,0">后退</button></div><p>必须持续按住按钮；松手、锁屏或断网将在300ms内停车。</p></section>
+<section id="auto" class="tab card" hidden><h2>自动建图</h2><button id="startAuto">启动自动建图</button><button id="pauseAuto">暂停</button><button id="resumeAuto">继续</button><button id="saveAuto">保存</button><p>自动任务启动后由 RK 本地监督器维持；手机网页短暂断连不会暂停探索。按钮执行结果会显示在顶部操作提示中。</p></section>
+<section id="nav" class="tab card" hidden><h2>自动导航</h2><select id="maps"></select><button id="startNav">加载地图进入导航</button><div class="row"><button id="setInitial">设置初始位姿</button><button id="setGoal">设置目标点</button></div><label>短点地图时使用的朝向(度)<input id="yaw" type="number" value="0" min="-180" max="180"></label><button id="cancel" class="danger">取消导航</button><p id="pickHint">先加载地图；随后按住地图上的位置，沿期望车头方向拖动并松开。</p><p id="navDetail">定位和目标结果会显示在顶部状态区。</p></section>
+<section id="mapsManage" class="tab card" hidden><h2>地图管理</h2><button id="refreshMaps" type="button">刷新列表</button><p>重命名和删除只允许在空闲模式执行；删除会移入 RK 的 .trash 回收站。选择“用于导航”只会切换到导航页，不会立即启动车轮。</p><div id="mapManagerList" class="mapManagerList"><p>正在读取地图列表…</p></div></section>
+</main><script src="/app.js"></script></body></html>

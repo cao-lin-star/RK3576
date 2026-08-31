@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Read-only, bounded health snapshot. This script never publishes a ROS topic,
+# changes a parameter, restarts a service, or sends a chassis command.
+set -uo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: footbath_remote_status [--deep]
+
+  --deep  Also sample ROS topic rates for a few seconds. Still read-only.
+EOF
+}
+
+deep=0
+while (($#)); do
+  case "$1" in
+    --deep) deep=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+env_file="${FOOTBATH_REMOTE_ENV:-/etc/footbath/remote-debug.env}"
+if [[ -r "$env_file" ]]; then
+  # shellcheck disable=SC1090
+  source "$env_file"
+fi
+
+FOOTBATH_WS="${FOOTBATH_WS:-/home/sky/rk3576_footbath_ws}"
+FOOTBATH_SERVICE="${FOOTBATH_SERVICE:-footbath-mobile.service}"
+FOOTBATH_EXPOSE_ROS_DDS="${FOOTBATH_EXPOSE_ROS_DDS:-0}"
+FOOTBATH_ALLOW_REMOTE_MOTION="${FOOTBATH_ALLOW_REMOTE_MOTION:-0}"
+ROS_DISTRO="${ROS_DISTRO:-humble}"
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+export ROS_DOMAIN_ID
+
+section() { printf '\n==== %s ====\n' "$1"; }
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+limited() {
+  local seconds="$1"
+  shift
+  timeout --signal=INT "${seconds}s" "$@"
+  local rc=$?
+  if [[ $rc -eq 124 ]]; then
+    printf '[bounded after %ss]\n' "$seconds"
+  elif [[ $rc -ne 0 ]]; then
+    printf '[command exited %s]\n' "$rc"
+  fi
+  return 0
+}
+
+section "policy"
+printf 'timestamp=%s\n' "$(date --iso-8601=seconds)"
+printf 'ros_domain_id=%s\n' "$ROS_DOMAIN_ID"
+printf 'expose_ros_dds=%s (must remain 0)\n' "$FOOTBATH_EXPOSE_ROS_DDS"
+printf 'allow_remote_motion=%s (must remain 0)\n' "$FOOTBATH_ALLOW_REMOTE_MOTION"
+
+section "host"
+printf 'hostname=%s\n' "$(hostname)"
+uname -a || true
+uptime || true
+free -h || true
+df -h / "$FOOTBATH_WS" 2>/dev/null || df -h / || true
+for thermal in /sys/class/thermal/thermal_zone*/temp; do
+  [[ -r "$thermal" ]] || continue
+  awk -v file="$thermal" '{printf "%s=%.1f C\n", file, $1/1000}' "$thermal"
+done
+
+section "network"
+ip -brief address || true
+printf '\n'
+ip route show || true
+if command_exists tailscale; then
+  printf '\nTailscale:\n'
+  limited 5 tailscale status
+else
+  printf 'Tailscale is not installed. LAN SSH can still be used.\n'
+fi
+
+section "services"
+for unit in "$FOOTBATH_SERVICE" ssh.service tailscaled.service; do
+  printf '%-34s %s\n' "$unit" "$(systemctl is-active "$unit" 2>/dev/null || true)"
+done
+
+section "usb-and-stable-devices"
+lsusb 2>/dev/null || true
+printf '\n'
+for device in /dev/footbath_stm32 /dev/footbath_lidar_high /dev/footbath_lidar_low; do
+  if [[ -e "$device" || -L "$device" ]]; then
+    printf '%s -> %s\n' "$device" "$(readlink -f "$device" 2>/dev/null || true)"
+  else
+    printf '%s -> MISSING\n' "$device"
+  fi
+done
+
+ros_ready=0
+set +u
+if [[ -r "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
+  # shellcheck disable=SC1090
+  source "/opt/ros/${ROS_DISTRO}/setup.bash"
+fi
+if [[ -r "${FOOTBATH_WS}/install/setup.bash" ]]; then
+  # shellcheck disable=SC1090
+  source "${FOOTBATH_WS}/install/setup.bash"
+fi
+set -u
+if command_exists ros2; then
+  ros_ready=1
+fi
+
+section "ros2-graph-read-only"
+if [[ $ros_ready -eq 0 ]]; then
+  printf 'ros2 CLI is unavailable; check ROS_DISTRO and FOOTBATH_WS.\n'
+  exit 0
+fi
+
+printf 'Nodes:\n'
+limited 6 nice -n 15 ros2 node list
+printf '\nTopics and types:\n'
+limited 6 nice -n 15 ros2 topic list -t
+
+if [[ $deep -eq 1 ]]; then
+  section "bounded-topic-rate-samples"
+  for topic in /scan_high /scan_low_front /odom /imu/data_raw; do
+    if limited 3 ros2 topic info "$topic" 2>/dev/null | grep -q 'Publisher count: [1-9]'; then
+      printf '\n%s:\n' "$topic"
+      limited 5 nice -n 15 ros2 topic hz --window 5 "$topic"
+    else
+      printf '%s: no publisher detected\n' "$topic"
+    fi
+  done
+fi

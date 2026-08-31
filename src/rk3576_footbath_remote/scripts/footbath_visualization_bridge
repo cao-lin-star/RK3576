@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ROS setup scripts read optional variables that may be unset.
+set +u
+source /opt/ros/humble/setup.bash
+if [[ -r /home/sky/rk3576_footbath_ws/install/setup.bash ]]; then
+  source /home/sky/rk3576_footbath_ws/install/setup.bash
+fi
+set -u
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+ros2 run rk3576_footbath_remote footbath_foxglove_drive_gate.py &
+gate_pid=$!
+cleanup() {
+  kill "$gate_pid" 2>/dev/null || true
+  wait "$gate_pid" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+nice -n 10 ros2 run foxglove_bridge foxglove_bridge --ros-args \
+  -p address:=127.0.0.1 \
+  -p port:=8765 \
+  -p 'topic_whitelist:=["^/scan_(high|low_front)$","^/tf$","^/tf_static$","^/map$","^/map_metadata$","^/odom$","^/imu/data_raw$","^/range/ultrasonic$","^/cmd_vel_(foxglove|manual|auto_limited|selected)$","^/safety/.*$","^/explore/.*$","^/diagnostics$"]' \
+  -p 'client_topic_whitelist:=["^/cmd_vel_foxglove$"]' \
+  -p 'service_whitelist:=["(?!)"]' \
+  -p 'param_whitelist:=["(?!)"]' \
+  -p 'capabilities:=["clientPublish","connectionGraph"]' \
+  -p num_threads:=2 \
+  -p max_qos_depth:=10 \
+  -p sysinfo:=false

@@ -1,0 +1,23 @@
+[Unit]
+Description=Footbath local Foxglove bridge with armed manual-command gate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sky
+Group=sky
+Environment=HOME=/home/sky
+Environment=ROS_LOG_DIR=/run/footbath-foxglove
+RuntimeDirectory=footbath-foxglove
+ExecStart=/usr/local/bin/footbath_visualization_bridge
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=3
+Nice=10
+CPUQuota=50%
+MemoryMax=512M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

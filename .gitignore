@@ -1,0 +1,41 @@
+# colcon and ROS runtime output
+/build/
+/install/
+/log/
+/.colcon/
+/.ros/
+/maps/
+
+# Dependency imported from dependencies.repos (m_explore_ros2 is vendored)
+/src/sllidar_ros2/
+
+# Python caches and test output
+/.pytest_cache/
+**/.pytest_cache/
+**/__pycache__/
+*.py[cod]
+*.log
+
+# Rosbags and generated maps
+*.bag
+*.db3
+*.mcap
+*.posegraph
+*.posegraph.*
+/src/rk3576_footbath_navigation/maps/*.pgm
+/src/rk3576_footbath_navigation/maps/*.yaml
+!/src/rk3576_footbath_navigation/maps/README.md
+
+# Machine-local credentials and service state
+mobile.env
+remote-debug.env
+*.env.local
+*.key
+*.pem
+*.crt
+
+# Editors and temporary files
+/.vscode/
+/.idea/
+*.bak
+*.swp

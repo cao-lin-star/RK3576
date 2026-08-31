@@ -1,0 +1,4 @@
+# Verified RPLIDAR C1 USB adapters on LubanCat-3IO, 2026-08-27.
+# Bind by unique CP2102N serial number, never by ttyUSB enumeration order.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="14c5c9c4ff1df11186b7c4e40f0f12f8", SYMLINK+="footbath_lidar_low", GROUP="dialout", MODE="0660", TAG+="systemd"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="84fa76bdff1df111ae35bde40f0f12f8", SYMLINK+="footbath_lidar_high", GROUP="dialout", MODE="0660", TAG+="systemd"

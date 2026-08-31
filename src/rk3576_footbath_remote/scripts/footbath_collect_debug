@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Collects a low-I/O diagnostic archive. No rosbag, map, credential, motion
+# command, parameter change, or service restart is performed.
+set -uo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: footbath_collect_debug [--output-dir DIR] [--no-deep]
+
+The resulting .tar.gz contains bounded status, logs and configuration metadata.
+It intentionally excludes SSH keys, passwords, VPN state, maps and rosbag data.
+EOF
+}
+
+env_file="${FOOTBATH_REMOTE_ENV:-/etc/footbath/remote-debug.env}"
+if [[ -r "$env_file" ]]; then
+  # shellcheck disable=SC1090
+  source "$env_file"
+fi
+
+output_dir="${FOOTBATH_DEBUG_DIR:-${HOME}/footbath_debug}"
+deep=1
+while (($#)); do
+  case "$1" in
+    --output-dir)
+      [[ $# -ge 2 ]] || { printf '%s\n' '--output-dir needs a value' >&2; exit 2; }
+      output_dir="$2"; shift
+      ;;
+    --no-deep) deep=0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+FOOTBATH_WS="${FOOTBATH_WS:-/home/sky/rk3576_footbath_ws}"
+FOOTBATH_SERVICE="${FOOTBATH_SERVICE:-footbath-mobile.service}"
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+status_tool="${script_dir}/footbath_remote_status"
+if command -v footbath_remote_status >/dev/null 2>&1; then
+  status_tool="$(command -v footbath_remote_status)"
+fi
+
+mkdir -p "$output_dir"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/footbath-debug.XXXXXX")"
+trap 'rm -rf -- "$work_dir"' EXIT
+
+stamp="$(date +%Y%m%d_%H%M%S)"
+archive="${output_dir}/footbath-debug_${stamp}_$(hostname).tar.gz"
+
+if [[ $deep -eq 1 ]]; then
+  nice -n 15 "$status_tool" --deep >"${work_dir}/status.txt" 2>&1 || true
+else
+  nice -n 15 "$status_tool" >"${work_dir}/status.txt" 2>&1 || true
+fi
+
+journalctl -u "$FOOTBATH_SERVICE" -n 600 --no-pager >"${work_dir}/robot-service.log" 2>&1 || true
+journalctl -u ssh.service -u tailscaled.service -n 300 --no-pager >"${work_dir}/remote-services.log" 2>&1 || true
+dmesg --ctime 2>&1 | tail -n 400 >"${work_dir}/dmesg-tail.txt" || true
+ip -details address show >"${work_dir}/ip-address.txt" 2>&1 || true
+ip route show table all >"${work_dir}/ip-route.txt" 2>&1 || true
+lsusb -t >"${work_dir}/usb-tree.txt" 2>&1 || true
+ps -eo pid,ppid,ni,stat,%cpu,%mem,comm,args --sort=-%cpu | head -n 100 >"${work_dir}/processes.txt" 2>&1 || true
+
+hardware_yaml="${FOOTBATH_WS}/src/rk3576_footbath_bringup/config/hardware.yaml"
+[[ -r "$hardware_yaml" ]] && cp -- "$hardware_yaml" "${work_dir}/hardware.yaml"
+[[ -r /etc/default/rk3576-footbath ]] && sed -E '/(PASS|TOKEN|SECRET|KEY)=/I s/=.*/=<redacted>/' /etc/default/rk3576-footbath >"${work_dir}/rk3576-footbath.env"
+[[ -r "$env_file" ]] && sed -E '/(PASS|TOKEN|SECRET|KEY)=/I s/=.*/=<redacted>/' "$env_file" >"${work_dir}/remote-debug.env"
+
+(
+  cd "$work_dir" || exit 1
+  sha256sum ./* >manifest.sha256 2>/dev/null || true
+)
+
+if command -v ionice >/dev/null 2>&1; then
+  ionice -c 3 tar -C "$work_dir" -czf "$archive" .
+else
+  nice -n 15 tar -C "$work_dir" -czf "$archive" .
+fi
+chmod 0600 "$archive"
+printf '%s\n' "$archive"

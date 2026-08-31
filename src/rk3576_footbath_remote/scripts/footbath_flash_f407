@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+inbox=/home/sky/f407_firmware_inbox
+image=""
+ack=0
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo footbath_flash_f407 --image /home/sky/f407_firmware_inbox/file.hex \
+    --i-confirm-motor-power-off
+
+The fireDAP/CMSIS-DAP USB must be connected to RK3576. Disconnect the 24 V motor
+power before flashing; logic power may remain on.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --image) [[ $# -ge 2 ]] || exit 2; image=$2; shift ;;
+    --i-confirm-motor-power-off) ack=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+[[ ${EUID} -eq 0 ]] || { echo "Run with sudo." >&2; exit 1; }
+[[ $ack -eq 1 ]] || { echo "Motor-power-off confirmation is required." >&2; exit 2; }
+[[ -n "$image" && -f "$image" ]] || { echo "Firmware file not found." >&2; exit 2; }
+resolved=$(realpath -e -- "$image")
+case "$resolved" in
+  "$inbox"/*.hex|"$inbox"/*.bin) ;;
+  *) echo "Firmware must be a .hex or .bin inside $inbox" >&2; exit 2 ;;
+esac
+basename=$(basename -- "$resolved")
+[[ "$basename" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Unsafe firmware filename." >&2; exit 2; }
+command -v openocd >/dev/null || { echo "openocd is not installed." >&2; exit 1; }
+
+active_services=()
+for unit in footbath-mobile.service rk3576-footbath.service; do
+  if systemctl is-active --quiet "$unit"; then
+    active_services+=("$unit")
+    systemctl stop "$unit"
+  fi
+done
+restart_service() {
+  local unit
+  for unit in "${active_services[@]}"; do
+    systemctl start "$unit" || true
+  done
+}
+trap restart_service EXIT
+
+if [[ -e /dev/footbath_chassis_debug ]]; then
+  stty -F /dev/footbath_chassis_debug 115200 raw -echo || true
+  printf 'stop\r\n' >/dev/footbath_chassis_debug || true
+  sleep 0.6
+fi
+
+echo "Firmware SHA256: $(sha256sum "$resolved" | awk '{print $1}')"
+if [[ "$resolved" == *.bin ]]; then
+  echo "Raw BIN flashing is disabled because its flash address is ambiguous; use Keil HEX." >&2
+  exit 2
+fi
+
+openocd \
+  -f interface/cmsis-dap.cfg \
+  -f target/stm32f4x.cfg \
+  -c "transport select swd; adapter speed 1000; program $resolved verify reset exit"
+echo "FLASH_OK $basename"

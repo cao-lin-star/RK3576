@@ -1,0 +1,23 @@
+[Unit]
+Description=RK3576 Footbath ROS 2 hardware, mapping or navigation
+After=network-online.target dev-ttyS3.device dev-footbath_lidar_high.device
+Wants=network-online.target dev-ttyS3.device dev-footbath_lidar_high.device dev-footbath_lidar_low.device
+
+[Service]
+Type=simple
+User=sky
+Group=sky
+SupplementaryGroups=dialout
+EnvironmentFile=/etc/default/rk3576-footbath
+WorkingDirectory=/home/sky/rk3576_footbath_ws
+ExecStart=/home/sky/rk3576_footbath_ws/scripts/run_mode.sh
+KillSignal=SIGINT
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

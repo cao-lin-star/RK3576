@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+port=${FOOTBATH_CHASSIS_DEBUG_PORT:-/dev/footbath_chassis_debug}
+output_dir=${FOOTBATH_TUNING_DIR:-/home/sky/footbath_tuning}
+mkdir -p "$output_dir"
+stamp=$(date +%Y%m%d_%H%M%S)
+exec python3 "${script_dir}/footbath_loaded_deadband.py" \
+  --port "$port" \
+  --transcript "${output_dir}/loaded_deadband_${stamp}.log" \
+  --summary "${output_dir}/loaded_deadband_${stamp}.json" \
+  "$@"
