@@ -8,6 +8,11 @@ source /home/sky/rk3576_footbath_ws/install/setup.bash
 set -u
 
 mode="${FOOTBATH_MODE:-hardware}"
+mapping_scan_source="${FOOTBATH_MAPPING_SCAN_SOURCE:-fused}"
+if [[ "$mode" == "mapping" || "$mode" == "auto_mapping" ]] && [[ "$mapping_scan_source" != "fused" && "$mapping_scan_source" != "high" ]]; then
+  echo "Unsupported FOOTBATH_MAPPING_SCAN_SOURCE=$mapping_scan_source; choose fused or high" >&2
+  exit 2
+fi
 case "$mode" in
   hardware)
     exec ros2 launch rk3576_footbath_bringup hardware.launch.py \
@@ -15,11 +20,13 @@ case "$mode" in
     ;;
   mapping)
     exec ros2 launch rk3576_footbath_bringup mapping.launch.py \
-      headless:=true slam_backend:="${FOOTBATH_SLAM_BACKEND:-slam_toolbox}"
+      headless:=true slam_backend:="${FOOTBATH_SLAM_BACKEND:-slam_toolbox}" \
+      mapping_scan_source:="$mapping_scan_source"
     ;;
   auto_mapping)
     exec ros2 launch rk3576_footbath_bringup auto_mapping.launch.py \
       headless:=true start_explorer:=true \
+      mapping_scan_source:="$mapping_scan_source" \
       map_output_prefix:=/home/sky/rk3576_footbath_ws/maps/footbath_auto_%Y%m%d_%H%M%S
     ;;
   navigation)

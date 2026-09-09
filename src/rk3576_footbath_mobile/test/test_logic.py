@@ -1,6 +1,11 @@
 import secrets
 import pytest
-from rk3576_footbath_mobile.logic import clamp_command, hash_pin, occupancy_png, target_is_clear, verify_pin
+from rk3576_footbath_mobile.logic import clamp_command, hash_pin, normalize_mapping_scan_source, occupancy_png, target_is_clear, verify_pin
+
+def test_mapping_scan_source_allowlist():
+    assert normalize_mapping_scan_source(None)=="fused"
+    assert normalize_mapping_scan_source(" HIGH ")=="high"
+    with pytest.raises(ValueError): normalize_mapping_scan_source("scan_low")
 
 def test_velocity_limits_and_nonfinite():
     assert clamp_command(2.0,-2.0)==(0.30,-0.80)
@@ -79,3 +84,15 @@ def test_saved_map_name_opens_preview_contract():
     assert "gateway.map_store.preview_data" in source
     assert 'title.onclick=()=>viewSavedMap(entry)' in js
     assert "savedMapPreview" in js
+
+def test_mobile_mapping_scan_source_contract():
+    root=__import__("pathlib").Path(__file__).resolve().parents[1]
+    source=(root/"rk3576_footbath_mobile"/"gateway.py").read_text(encoding="utf-8")
+    html=(root/"web"/"index.html").read_text(encoding="utf-8")
+    js=(root/"web"/"app.js").read_text(encoding="utf-8")
+    assert '"/scan_mapping_fused"' in source
+    assert 'qos_profile_sensor_data' in source
+    assert 'mapping_scan_source:={requested_source}' in source
+    assert '"mapping_scan_source":self.mapping_scan_source' in source
+    assert 'id="mappingScanSource"' in html
+    assert 'mapping_scan_source:$("#mappingScanSource").value' in js

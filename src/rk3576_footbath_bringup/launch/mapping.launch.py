@@ -27,20 +27,39 @@ def generate_launch_description():
     show_rviz = PythonExpression([
         "'", LaunchConfiguration("headless"), "'.lower() == 'false'"
     ])
+    mapping_scan_topic = PythonExpression([
+        "'/scan_mapping_fused' if '",
+        LaunchConfiguration("mapping_scan_source"),
+        "' == 'fused' else '/scan_high'"
+    ])
+    fusion_enabled = PythonExpression([
+        "'", LaunchConfiguration("mapping_scan_source"), "' == 'fused'"
+    ])
+
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("headless", default_value="true"),
         DeclareLaunchArgument("slam_backend", default_value="slam_toolbox"),
+        DeclareLaunchArgument(
+            "mapping_scan_source",
+            default_value="fused",
+            choices=["high", "fused"],
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(bringup_dir, "launch", "hardware.launch.py")),
-            launch_arguments={"use_sim_time": LaunchConfiguration("use_sim_time")}.items(),
+            launch_arguments={
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "start_mapping_fusion": fusion_enabled,
+            }.items(),
         ),
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(slam_dir, "launch", "slam.launch.py")),
+            PythonLaunchDescriptionSource(
+                os.path.join(slam_dir, "launch", "slam.launch.py")),
             launch_arguments={
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "slam_backend": LaunchConfiguration("slam_backend"),
+                "scan_topic": mapping_scan_topic,
                 "use_rviz": show_rviz,
             }.items(),
         ),

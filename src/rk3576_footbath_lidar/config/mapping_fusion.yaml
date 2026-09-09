@@ -1,0 +1,16 @@
+dual_lidar_mapping_fusion:
+  ros__parameters:
+    topics:
+      high: /scan_high
+      low: /scan_low_front
+      output: /scan_mapping_fused
+      diagnostics: /diagnostics
+    fixed_frame: odom
+    # Dynamic baseline 2026-09-02: median 17.62 ms, p95 38.73 ms, max 47.82 ms.
+    max_pair_delta_s: 0.060
+    high_stale_timeout_s: 0.150
+    # Wait briefly for the next low frame when USB phases make the previous one too old.
+    pair_wait_timeout_s: 0.080
+    low_stale_timeout_s: 0.150
+    transform_timeout_s: 0.050
+    diagnostic_period_s: 1.0

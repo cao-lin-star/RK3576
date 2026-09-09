@@ -38,6 +38,7 @@
 
 #include <explore/explore.h>
 
+#include <stdexcept>
 #include <thread>
 
 inline static bool same_point(const geometry_msgs::msg::Point& one,
@@ -70,6 +71,8 @@ Explore::Explore()
   this->declare_parameter<float>("gain_scale", 1.0);
   this->declare_parameter<float>("min_frontier_size", 0.5);
   this->declare_parameter<bool>("return_to_init", false);
+  this->declare_parameter<double>("blacklist_radius", 0.65);
+  this->declare_parameter<std::string>("navigation_behavior_tree", "");
 
   this->get_parameter("planner_frequency", planner_frequency_);
   this->get_parameter("progress_timeout", timeout);
@@ -80,6 +83,12 @@ Explore::Explore()
   this->get_parameter("min_frontier_size", min_frontier_size);
   this->get_parameter("return_to_init", return_to_init_);
   this->get_parameter("robot_base_frame", robot_base_frame_);
+  this->get_parameter("blacklist_radius", blacklist_radius_);
+  this->get_parameter("navigation_behavior_tree", navigation_behavior_tree_);
+
+  if (blacklist_radius_ <= 0.0) {
+    throw std::invalid_argument("blacklist_radius must be positive");
+  }
 
   progress_timeout_ = timeout;
   move_base_client_ =
@@ -132,7 +141,12 @@ Explore::Explore()
   exploring_timer_ = this->create_wall_timer(
       std::chrono::milliseconds((uint16_t)(1000.0 / planner_frequency_)),
       [this]() { makePlan(); });
-  // Start exploration right away
+  // A supervisor may require Nav2 and home capture before the first goal.
+  if (this->declare_parameter<bool>("start_paused", false)) {
+    stop();
+    return;
+  }
+  // Start exploration right away when no external startup gate is requested.
   auto status_msg = explore_lite_msgs::msg::ExploreStatus();
   status_msg.status = explore_lite_msgs::msg::ExploreStatus::EXPLORATION_STARTED;
   status_pub_->publish(status_msg);
@@ -228,6 +242,9 @@ void Explore::visualizeFrontiers(
 
 void Explore::makePlan()
 {
+  if (paused_) {
+    return;
+  }
   // find frontiers
   auto pose = costmap_client_.getRobotPose();
   // get frontiers sorted according to cost
@@ -281,9 +298,11 @@ void Explore::makePlan()
       (this->now() - last_progress_ >
        tf2::durationFromSec(progress_timeout_)) &&
       !resuming_) {
-    frontier_blacklist_.push_back(target_position);
-    RCLCPP_DEBUG(logger_, "Adding current goal to black list");
-    makePlan();
+    addToBlacklist(target_position, "no exploration progress");
+    goal_active_ = false;
+    if (navigation_goal_handle_) {
+      move_base_client_->async_cancel_goal(navigation_goal_handle_);
+    }
     return;
   }
 
@@ -305,17 +324,26 @@ void Explore::makePlan()
   goal.pose.pose.orientation.w = 1.;
   goal.pose.header.frame_id = costmap_client_.getGlobalFrameID();
   goal.pose.header.stamp = this->now();
+  goal.behavior_tree = navigation_behavior_tree_;
 
   goal_active_ = true;
+  const auto generation = ++request_generation_;
   auto send_goal_options = rclcpp_action::Client<
       nav2_msgs::action::NavigateToPose>::SendGoalOptions();
 
   send_goal_options.goal_response_callback =
-      [this](const NavigationGoalHandle::SharedPtr& goal_handle) {
+      [this, generation](const NavigationGoalHandle::SharedPtr& goal_handle) {
+        if (paused_ || generation != request_generation_) {
+          if (goal_handle) {
+            move_base_client_->async_cancel_goal(goal_handle);
+          }
+          return;
+        }
         if (!goal_handle) {
           RCLCPP_ERROR(logger_, "Goal was REJECTED by the action server");
           goal_active_ = false;
         } else {
+          navigation_goal_handle_ = goal_handle;
           active_goal_id_ = goal_handle->get_goal_id();
           RCLCPP_DEBUG(logger_, "Goal ACCEPTED, uuid: %s",
             rclcpp_action::to_string(active_goal_id_).c_str());
@@ -323,8 +351,11 @@ void Explore::makePlan()
       };
 
   send_goal_options.result_callback =
-      [this,
+      [this, generation,
        target_position](const NavigationGoalHandle::WrappedResult& result) {
+        if (paused_ || generation != request_generation_) {
+          return;
+        }
         reachedGoal(result, target_position);
       };
   move_base_client_->async_send_goal(goal, send_goal_options);
@@ -358,19 +389,25 @@ void Explore::returnToInitialPose()
 }
 bool Explore::goalOnBlacklist(const geometry_msgs::msg::Point& goal)
 {
-  constexpr static size_t tolerace = 5;
-  nav2_costmap_2d::Costmap2D* costmap2d = costmap_client_.getCostmap();
-
-  // check if a goal is on the blacklist for goals that we're pursuing
-  for (auto& frontier_goal : frontier_blacklist_) {
-    double x_diff = fabs(goal.x - frontier_goal.x);
-    double y_diff = fabs(goal.y - frontier_goal.y);
-
-    if (x_diff < tolerace * costmap2d->getResolution() &&
-        y_diff < tolerace * costmap2d->getResolution())
+  for (const auto& frontier_goal : frontier_blacklist_) {
+    const double x_diff = goal.x - frontier_goal.x;
+    const double y_diff = goal.y - frontier_goal.y;
+    if (std::hypot(x_diff, y_diff) <= blacklist_radius_) {
       return true;
+    }
   }
   return false;
+}
+
+void Explore::addToBlacklist(const geometry_msgs::msg::Point& goal,
+                             const char* reason)
+{
+  if (!goalOnBlacklist(goal)) {
+    frontier_blacklist_.push_back(goal);
+  }
+  RCLCPP_WARN(
+      logger_, "Frontier (%.2f, %.2f) blocked for %.2f m: %s",
+      goal.x, goal.y, blacklist_radius_, reason);
 }
 
 void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
@@ -380,6 +417,7 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
     return;
   }
 
+  navigation_goal_handle_.reset();
   goal_active_ = false;
   switch (result.code) {
     case rclcpp_action::ResultCode::SUCCEEDED:
@@ -390,17 +428,16 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
     case rclcpp_action::ResultCode::ABORTED:
 #ifdef NAV2_RESULT_HAS_ERROR_CODE
       if (result.result && result.result->error_code != 0) {
-        RCLCPP_DEBUG(logger_, "Goal aborted with error_code=%d (%s) — blacklisting frontier",
-                     result.result->error_code,
-                     result.result->error_msg.c_str());
-        frontier_blacklist_.push_back(frontier_goal);
+        RCLCPP_WARN(logger_, "Goal aborted with error_code=%d (%s)",
+                    result.result->error_code,
+                    result.result->error_msg.c_str());
+        addToBlacklist(frontier_goal, "Nav2 aborted exploration goal");
       } else {
         RCLCPP_DEBUG(logger_, "Goal aborted with error_code=0 — likely a preemption, not blacklisting");
       }
 #else
       // Humble: no error_code field, blacklist unconditionally on abort
-      RCLCPP_DEBUG(logger_, "Goal aborted — blacklisting frontier");
-      frontier_blacklist_.push_back(frontier_goal);
+      addToBlacklist(frontier_goal, "Nav2 aborted exploration goal");
 #endif
       // If it was aborted probably because we've found another frontier goal,
       // so just return and don't make plan again
@@ -436,6 +473,8 @@ void Explore::start()
 
 void Explore::stop(bool finished_exploring)
 {
+  paused_ = true;
+  ++request_generation_;
   RCLCPP_INFO(logger_, "Exploration stopped.");
 
   goal_active_ = false;
@@ -446,7 +485,11 @@ void Explore::stop(bool finished_exploring)
     status_pub_->publish(status_msg);
   }
 
-  move_base_client_->async_cancel_all_goals();
+  // Cancel only our own goal: a supervisor may already be returning home.
+  if (navigation_goal_handle_) {
+    move_base_client_->async_cancel_goal(navigation_goal_handle_);
+    navigation_goal_handle_.reset();
+  }
   exploring_timer_->cancel();
 
   if (return_to_init_ && finished_exploring) {
@@ -456,6 +499,10 @@ void Explore::stop(bool finished_exploring)
 
 void Explore::resume()
 {
+  if (!paused_) {
+    return;
+  }
+  paused_ = false;
   resuming_ = true;
   RCLCPP_INFO(logger_, "Exploration resuming.");
   auto status_msg = explore_lite_msgs::msg::ExploreStatus();

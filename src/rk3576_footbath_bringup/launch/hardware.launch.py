@@ -91,6 +91,7 @@ def generate_launch_description():
         DeclareLaunchArgument("start_lidar", default_value="true"),
         DeclareLaunchArgument("start_lidar_high", default_value="true"),
         DeclareLaunchArgument("start_lidar_low", default_value="true"),
+        DeclareLaunchArgument("start_mapping_fusion", default_value="false"),
         DeclareLaunchArgument("stm32_device", default_value=stm32["device"]),
         DeclareLaunchArgument("stm32_baudrate", default_value=str(stm32["baudrate"])),
         DeclareLaunchArgument("lidar_high_device", default_value=lidar_high["device"]),
@@ -164,6 +165,18 @@ def generate_launch_description():
             respawn=True,
             respawn_delay=2.0,
             condition=both_enabled("start_lidar", "start_lidar_low"),
+        ),
+        Node(
+            package="rk3576_footbath_lidar",
+            executable="dual_lidar_mapping_fusion",
+            name="dual_lidar_mapping_fusion",
+            output="screen",
+            parameters=[
+                os.path.join(lidar_dir, "config", "mapping_fusion.yaml"),
+            ],
+            respawn=True,
+            respawn_delay=2.0,
+            condition=IfCondition(LaunchConfiguration("start_mapping_fusion")),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(

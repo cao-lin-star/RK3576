@@ -21,9 +21,13 @@ import time
 from typing import Dict, Optional
 
 from action_msgs.srv import CancelGoal
+from ament_index_python.packages import get_package_share_directory
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from explore_lite_msgs.msg import ExploreStatus
 from geometry_msgs.msg import Twist
+from lifecycle_msgs.srv import GetState
+from .home_return import HomeReturn
+from .map_home import save_home
 from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -35,7 +39,6 @@ from slam_toolbox.srv import SaveMap, SerializePoseGraph
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
-from .health import auto_motion_lease_value
 from .health import evaluate_freshness, timestamped_prefix
 from .health import validate_laser_scan
 from .health import validate_occupancy_grid
@@ -192,6 +195,21 @@ class ExplorationSupervisor(Node):
         self._save_in_progress = False
         self._save_state = "idle"
         self._last_map_prefix = ""
+        self._nav_states = {}
+        self._nav_pending = {}
+        self._nav_clients = {
+            name: self.create_client(GetState, '/' + name + '/get_state')
+            for name in ('planner_server', 'controller_server', 'bt_navigator')
+        }
+        self._nav_timer = self.create_timer(1.0, self._poll_navigation)
+        self._home_behavior_tree = os.path.join(
+            get_package_share_directory('rk3576_footbath_exploration'),
+            'behavior_trees', 'exploration_limited_recovery.xml')
+        self.home = HomeReturn(self)
+        if self.home.localization:
+            self._auto_start = False
+            for name in ('amcl', 'map_server'):
+                self._nav_clients[name] = self.create_client(GetState, '/' + name + '/get_state')
         self._timer = self.create_timer(self._timer_period, self._supervise)
 
         self._publish_pause(force=True)
@@ -250,6 +268,7 @@ class ExplorationSupervisor(Node):
             (twist.angular.x, twist.angular.y, twist.angular.z),
         )
         if valid:
+            self.home.observe_odom(message)
             self._mark_seen("odom")
         else:
             self._record_invalid("odom", reason)
@@ -265,8 +284,16 @@ class ExplorationSupervisor(Node):
                     f"{self._state}"
                 )
                 return
-            self._pause(self.COMPLETE, "explore_lite reported no frontiers")
-            if self._save_on_complete:
+            returning = False
+            if self.home.auto_return:
+                returning, reason = self.home.request()
+                if not returning:
+                    self.home.phase = 'failed'
+                    self.home.message = '自动返航未启动: ' + reason
+                    self.get_logger().warning('Auto-return not started: ' + reason)
+            if not returning:
+                self._pause(self.COMPLETE, "explore_lite reported no frontiers")
+            if self._save_on_complete and not returning:
                 self._request_map_save("exploration complete")
 
     def _publish_pause(self, force: bool = False) -> None:
@@ -301,17 +328,68 @@ class ExplorationSupervisor(Node):
         self._cancel_client.call_async(CancelGoal.Request())
 
     def _pause(self, state: str, reason: str) -> None:
+        if state not in ('return_preparing', 'returning_home'):
+            self.home.interrupt(reason)
         was_running = self._state == self.RUNNING
         self._state = state
         self._reason = reason
         self._publish_pause(force=True)
         self._publish_lease(False)
         self._publish_zero()
-        if was_running or state in (self.COMPLETE, self.TIMED_OUT):
+        if state != 'return_preparing' and (
+                was_running or state in (self.COMPLETE, self.TIMED_OUT)):
             self._cancel_navigation()
         self.get_logger().warning(f"Exploration paused: {reason}")
 
+    def _poll_navigation(self) -> None:
+        now = time.monotonic()
+        for name, client in self._nav_clients.items():
+            pending = self._nav_pending.get(name)
+            if pending is not None:
+                future, started = pending
+                if not future.done() and now - started < 2.0:
+                    continue
+                if not future.done():
+                    client.remove_pending_request(future)
+                    future.cancel()
+                self._nav_pending.pop(name, None)
+            if client.service_is_ready():
+                future = client.call_async(GetState.Request())
+                self._nav_pending[name] = (future, now)
+                future.add_done_callback(
+                    lambda result, node=name: self._navigation_state(node, result))
+
+    def _navigation_state(self, name, future) -> None:
+        if future.cancelled():
+            return
+        try:
+            self._nav_states[name] = (
+                future.result().current_state.id, time.monotonic())
+        except Exception:
+            self._nav_states.pop(name, None)
+
+    def _navigation_ready(self) -> bool:
+        now = time.monotonic()
+        return all(
+            self._nav_states.get(name, (0, 0))[0] == 3
+            and now - self._nav_states.get(name, (0, 0))[1] < 4.0
+            for name in self._nav_clients)
+
     def _begin_exploration(self) -> None:
+        dock = self.home.dock
+        if self.home.navigation_session and dock.exit_complete:
+            self._state = 'navigation_ready'
+            self.home.phase = 'navigation_ready'
+            self.home.message = '已完成50cm出站，可以规划普通导航目标'
+            self._publish_lease(True)
+            return True
+        if dock.enabled and dock.auto_exit and not dock.exit_complete:
+            try:
+                dock.begin('exit')
+                return True
+            except ValueError as error:
+                self.home._fail(str(error))
+                return False
         self._state = self.RUNNING
         self._reason = "health gate passed"
         self._fault_latched = False
@@ -319,8 +397,21 @@ class ExplorationSupervisor(Node):
         self._publish_resume()
         self._publish_lease(True)
         self.get_logger().info("Exploration resumed after health gate passed")
+        return True
 
     def _start_service(self, _request: Trigger.Request, response: Trigger.Response):
+        if self.home.localization:
+            response.success = False
+            response.message = '当前是已保存地图导航模式，不能继续探索'
+            return response
+        if self.home.pose is None or self.home.phase in self.home.BUSY:
+            response.success = False
+            response.message = '起点未记录或正在返航，不能启动探索'
+            return response
+        if not self._navigation_ready():
+            response.success = False
+            response.message = 'Nav2 not active; wait for navigation startup'
+            return response
         healthy, self._ages = evaluate_freshness(
             time.monotonic(), self._last_seen, self._maximum_age,
             ("scan", "map", "odom"))
@@ -329,9 +420,8 @@ class ExplorationSupervisor(Node):
             response.message = "inputs are not fresh: " + self._format_ages()
             return response
         self._healthy_cycles = self._healthy_cycles_required
-        self._begin_exploration()
-        response.success = True
-        response.message = "exploration resumed"
+        response.success = self._begin_exploration()
+        response.message = self.home.message if self.home.dock.enabled and not self.home.dock.exit_complete else 'exploration resumed'
         return response
 
     def _stop_service(self, _request: Trigger.Request, response: Trigger.Response):
@@ -348,11 +438,32 @@ class ExplorationSupervisor(Node):
         response.message = message
         return response
 
+    def _home_inputs_ready(self) -> bool:
+        self._refresh_static_map_health()
+        healthy, _ = evaluate_freshness(
+            time.monotonic(), self._last_seen, self._maximum_age,
+            ('scan', 'map', 'odom'))
+        return healthy and self._navigation_ready()
+
+    def _motion_allowed(self) -> bool:
+        return self._state in (self.RUNNING, 'returning_home', 'dock_motion', 'navigation_ready')
+
+    def _refresh_static_map_health(self):
+        # Static map_server is transient-local: no periodic SLAM map expected.
+        # Only renew a previously validated map while map_server remains active.
+        if (self.home.localization and self._last_seen.get('map') is not None
+                and self._nav_states.get('map_server', (0, 0))[0] == 3
+                and time.monotonic()-self._nav_states['map_server'][1] < 4):
+            self._last_seen['map'] = time.monotonic()
+
     def _supervise(self) -> None:
+        self._refresh_static_map_health()
         now = time.monotonic()
         healthy, self._ages = evaluate_freshness(
             now, self._last_seen, self._maximum_age,
             ("scan", "map", "odom"))
+        healthy = healthy and self._navigation_ready()
+        self.home.tick(healthy)
         self._healthy_cycles = self._healthy_cycles + 1 if healthy else 0
 
         if self._state == self.WAITING:
@@ -360,7 +471,8 @@ class ExplorationSupervisor(Node):
             self._publish_zero()
             ready_long_enough = now - self._created_at >= self._startup_hold
             enough_samples = self._healthy_cycles >= self._healthy_cycles_required
-            if self._auto_start and ready_long_enough and enough_samples:
+            if (self._auto_start and ready_long_enough and enough_samples
+                    and self.home.pose is not None):
                 self._begin_exploration()
             elif self._auto_start and now - self._created_at > self._startup_timeout:
                 self._fault_latched = True
@@ -382,13 +494,20 @@ class ExplorationSupervisor(Node):
                 self._pause(self.TIMED_OUT, "maximum exploration duration reached")
                 if self._save_on_timeout:
                     self._request_map_save("exploration timeout")
+        elif self._state == 'navigation_ready':
+            if not healthy or self.home.current_pose() is None:
+                self._pause(self.PAUSED_FAULT, '导航输入或定位失效，停车；恢复后请重新提交目标')
+            else:
+                self._publish_pause()
+        elif self._state in ('returning_home', 'dock_motion'):
+            self._publish_pause()
         else:
             self._publish_pause()
             self._publish_zero()
 
         # Short-lived heartbeat; /explore/resume remains exploration control only.
         self._publish_lease(
-            auto_motion_lease_value(self._state, self.RUNNING))
+            self._motion_allowed())
 
         if now - self._last_diagnostic_publish >= 1.0:
             self._publish_diagnostics(healthy)
@@ -439,6 +558,7 @@ class ExplorationSupervisor(Node):
         if not self._serialize_pose_graph:
             self._save_in_progress = False
             self._save_state = "complete"
+            self._persist_home()
             self.get_logger().info(
                 f"Occupancy map saved: {self._last_map_prefix}")
             return
@@ -474,9 +594,16 @@ class ExplorationSupervisor(Node):
                 f"SerializePoseGraph returned {result}")
             return
         self._save_state = "complete"
+        self._persist_home()
         self.get_logger().info(
             "Map and pose graph saved with prefix: "
             f"{self._last_map_prefix}")
+
+    def _persist_home(self):
+        try:
+            save_home(self._last_map_prefix, self.home.pose)
+        except Exception as error:
+            self.get_logger().error('地图已保存但起点保存失败，必须手动初始化: '+str(error))
 
     def _format_ages(self) -> str:
         parts = []
@@ -496,7 +623,7 @@ class ExplorationSupervisor(Node):
         status = DiagnosticStatus()
         status.name = "rk3576_footbath/exploration_supervisor"
         status.hardware_id = "rk3576"
-        if self._state == self.RUNNING and healthy:
+        if self._motion_allowed() and healthy:
             status.level = DiagnosticStatus.OK
             status.message = "automatic exploration running"
         elif self._state in (self.WAITING, self.PAUSED_OPERATOR, self.COMPLETE):
@@ -514,7 +641,7 @@ class ExplorationSupervisor(Node):
             self._key_value("fault_latched", self._fault_latched),
             self._key_value(
                 "auto_motion_lease",
-                auto_motion_lease_value(self._state, self.RUNNING),
+                self._motion_allowed(),
             ),
             self._key_value("save_state", self._save_state),
             self._key_value("last_map_prefix", self._last_map_prefix),

@@ -112,6 +112,19 @@ def front_sector_minimum(
     return nearest
 
 
+def held_detection_active(
+    now: float,
+    last_detected: float | None,
+    hold_time: float,
+) -> bool:
+    """Return true while a prior detection remains inside its hold window."""
+    if hold_time < 0.0:
+        raise ValueError("hold_time must be non-negative")
+    if last_detected is None or now < last_detected:
+        return False
+    return now - last_detected <= hold_time
+
+
 def suspected_glass(
     ultrasonic_range: float,
     high_lidar_min: float,

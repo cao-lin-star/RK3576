@@ -36,11 +36,25 @@ def generate_launch_description():
     show_rviz = PythonExpression([
         "'", LaunchConfiguration("headless"), "'.lower() == 'false'"
     ])
+    mapping_scan_topic = PythonExpression([
+        "'/scan_mapping_fused' if '",
+        LaunchConfiguration("mapping_scan_source"),
+        "' == 'fused' else '/scan_high'"
+    ])
+    fusion_enabled = PythonExpression([
+        "'", LaunchConfiguration("mapping_scan_source"), "' == 'fused'"
+    ])
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("headless", default_value="true"),
         DeclareLaunchArgument("start_explorer", default_value="true"),
+        DeclareLaunchArgument("auto_start_exploration", default_value="true"),
+        DeclareLaunchArgument(
+            "mapping_scan_source",
+            default_value="fused",
+            choices=["high", "fused"],
+        ),
         DeclareLaunchArgument(
             "map_output_prefix",
             default_value=(
@@ -54,6 +68,7 @@ def generate_launch_description():
                     bringup_dir, "launch", "hardware.launch.py")),
             launch_arguments={
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "start_mapping_fusion": fusion_enabled,
             }.items(),
         ),
         IncludeLaunchDescription(
@@ -62,6 +77,7 @@ def generate_launch_description():
             launch_arguments={
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "slam_backend": "slam_toolbox",
+                "scan_topic": mapping_scan_topic,
                 "use_rviz": show_rviz,
             }.items(),
         ),
@@ -75,9 +91,7 @@ def generate_launch_description():
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "params_file": nav2_params,
                 "autostart": "true",
-                # Nav2 Humble evaluates `not <use_composition>` as a
-                # PythonExpression, so these values must be Python boolean
-                # literals (capitalized) rather than YAML-style booleans.
+                # Humble expects Python boolean literals for these values.
                 "use_composition": "False",
                 "use_respawn": "True",
             }.items(),
@@ -99,6 +113,7 @@ def generate_launch_description():
             launch_arguments={
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "start_explorer": LaunchConfiguration("start_explorer"),
+                "auto_start_exploration": LaunchConfiguration("auto_start_exploration"),
                 "map_output_prefix": LaunchConfiguration(
                     "map_output_prefix"),
             }.items(),

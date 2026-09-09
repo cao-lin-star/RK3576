@@ -97,6 +97,8 @@ private:
       const std::vector<frontier_exploration::Frontier>& frontiers);
 
   bool goalOnBlacklist(const geometry_msgs::msg::Point& goal);
+  void addToBlacklist(const geometry_msgs::msg::Point& goal,
+                      const char* reason);
 
   NavigationGoalHandle::SharedPtr navigation_goal_handle_;
   // void
@@ -140,11 +142,15 @@ private:
   double planner_frequency_;
   double potential_scale_, orientation_scale_, gain_scale_;
   double progress_timeout_;
+  double blacklist_radius_;
   bool visualize_;
   bool return_to_init_;
   std::string robot_base_frame_;
+  std::string navigation_behavior_tree_;
   bool resuming_ = false;
   bool goal_active_{false};
+  bool paused_{false};
+  std::size_t request_generation_{0};
   rclcpp_action::GoalUUID active_goal_id_;
 };
 }  // namespace explore

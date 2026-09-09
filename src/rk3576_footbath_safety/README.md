@@ -42,7 +42,7 @@ ros2 launch rk3576_footbath_safety safety.launch.py \
 launch中的限速器和仲裁器默认关闭，必须由最终bringup显式开启，并同时把STM32桥的
 输入改为 `/cmd_vel_selected`。在这两项完成以前不能声称自动限速链已接通。
 
-## 疑似玻璃诊断
+## 疑似玻璃诊断与全局虚拟障碍
 
 监视器比较正前方超声波距离与高、低雷达前方扇区最近点。只有三路数据均在0.50秒
 内更新时，`/safety/suspected_glass_valid`才为true。当超声波在有效距离内、并且
@@ -55,9 +55,11 @@ abs(lidar_distance - ultrasonic_distance) <= 0.15 m
 连续3次后，`/safety/suspected_glass`置true。结果及valid均为可靠、transient-local
 Bool，方便晚加入的界面获得最新状态。
 
-该算法**仅用于诊断**，不能作为玻璃防撞或自由空间判定：超声波波束宽，雷达只取
-扇区最近点，没有目标方位和时间同步；玻璃斜入射仍可能同时漏检。valid=false表示
-数据未知，绝不能将此时的suspected=false解释为“确认没有玻璃”。
+该算法不会直接向底盘发速度或停车命令。疑似玻璃成立后，监视器同时向
+/range/suspected_glass发布虚拟Range障碍；Nav2全局代价地图使用独立Range层标记，
+并在最后一次命中后保持5秒。失配消失后发布max_range清除该层。它仍不能代替F407
+硬停：超声波波束宽、雷达只取扇区最近点，玻璃斜入射仍可能同时漏检。valid=false
+表示数据未知，绝不能将suspected=false解释为“确认没有玻璃”。
 
 ## 验收检查
 

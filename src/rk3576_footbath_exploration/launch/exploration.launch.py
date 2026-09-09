@@ -29,6 +29,8 @@ def generate_launch_description():
         package_dir, "config", "explore_lite.yaml")
     default_supervisor_params = os.path.join(
         package_dir, "config", "supervisor.yaml")
+    exploration_behavior_tree = os.path.join(
+        package_dir, "behavior_trees", "exploration_limited_recovery.xml")
 
     supervisor = Node(
         package="rk3576_footbath_exploration",
@@ -41,6 +43,10 @@ def generate_launch_description():
                 "use_sim_time": ParameterValue(
                     LaunchConfiguration("use_sim_time"), value_type=bool),
                 "map_output_prefix": LaunchConfiguration("map_output_prefix"),
+                "auto_start": ParameterValue(
+                    LaunchConfiguration("auto_start_exploration"), value_type=bool),
+                "dock.auto_exit": ParameterValue(
+                    LaunchConfiguration("start_explorer"), value_type=bool),
             },
         ],
     )
@@ -54,6 +60,7 @@ def generate_launch_description():
             {
                 "use_sim_time": ParameterValue(
                     LaunchConfiguration("use_sim_time"), value_type=bool),
+                "navigation_behavior_tree": exploration_behavior_tree,
             },
         ],
         condition=IfCondition(LaunchConfiguration("start_explorer")),
@@ -62,6 +69,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("start_explorer", default_value="true"),
+        DeclareLaunchArgument("auto_start_exploration", default_value="true"),
         DeclareLaunchArgument(
             "explore_params", default_value=default_explore_params),
         DeclareLaunchArgument(
@@ -74,8 +82,7 @@ def generate_launch_description():
             ),
         ),
         supervisor,
-        # explore_lite starts in its constructor. Starting it after the
-        # supervisor gives the pause publisher time to establish discovery;
-        # the independent auto-speed limiter remains the hard software bound.
+        # start_paused prevents a constructor goal before home/Nav2 readiness.
+        # The independent automatic limiter remains the hard software bound.
         TimerAction(period=1.0, actions=[explorer]),
     ])

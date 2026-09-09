@@ -19,6 +19,9 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.conditions import IfCondition
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -33,6 +36,22 @@ def generate_launch_description():
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("headless", default_value="true"),
         DeclareLaunchArgument("map", default_value=default_map),
+        DeclareLaunchArgument("return_session", default_value="false"),
+        DeclareLaunchArgument("depart_from_dock", default_value="true"),
+        DeclareLaunchArgument("home_pose_json", default_value="{}"),
+        Node(
+            package="rk3576_footbath_exploration", executable="exploration_supervisor",
+            name="exploration_supervisor", output="screen",
+            parameters=[os.path.join(get_package_share_directory("rk3576_footbath_exploration"),
+                                     "config", "supervisor.yaml"),
+                        {"auto_start": False, "return_home.localization_mode": True,
+                         "dock.departure_required": ParameterValue(
+                             LaunchConfiguration("depart_from_dock"), value_type=bool),
+                         "dock.navigation_session": ParameterValue(PythonExpression([
+                             "'", LaunchConfiguration("return_session"), "'.lower() != 'true'"
+                         ]), value_type=bool),
+                         "return_home.pose_json": ParameterValue(
+                             LaunchConfiguration("home_pose_json"), value_type=str)}]),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(bringup_dir, "launch", "hardware.launch.py")),
@@ -45,6 +64,7 @@ def generate_launch_description():
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "map": LaunchConfiguration("map"),
                 "use_rviz": show_rviz,
+                "dock_return": LaunchConfiguration("return_session"),
             }.items(),
         ),
         IncludeLaunchDescription(
@@ -53,7 +73,7 @@ def generate_launch_description():
             launch_arguments={
                 "start_glass_monitor": "false",
                 "start_auto_limiter": "true",
-                "auto_limiter_require_lease": "false",
+                "auto_limiter_require_lease": "true",
                 "start_command_mux": "false",
             }.items(),
         ),

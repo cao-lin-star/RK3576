@@ -33,17 +33,26 @@ def generate_launch_description():
     rviz_config = [FindPackageShare("rk3576_footbath_slam"), "/rviz/mapping.rviz"]
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
-        DeclareLaunchArgument("slam_backend", default_value="slam_toolbox",
-                              description="slam_toolbox 或 cartographer"),
+        DeclareLaunchArgument(
+            "slam_backend",
+            default_value="slam_toolbox",
+            description="SLAM backend",
+        ),
         DeclareLaunchArgument("slam_params_file", default_value=slam_params),
+        DeclareLaunchArgument("scan_topic", default_value="/scan_high"),
         DeclareLaunchArgument("use_rviz", default_value="false"),
         Node(
             package="slam_toolbox",
             executable="async_slam_toolbox_node",
             name="slam_toolbox",
             output="screen",
-            parameters=[LaunchConfiguration("slam_params_file"),
-                        {"use_sim_time": LaunchConfiguration("use_sim_time")}],
+            parameters=[
+                LaunchConfiguration("slam_params_file"),
+                {
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "scan_topic": LaunchConfiguration("scan_topic"),
+                },
+            ],
             condition=backend_is("slam_toolbox"),
         ),
         Node(
@@ -52,9 +61,11 @@ def generate_launch_description():
             name="cartographer_node",
             output="screen",
             parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
-            arguments=["-configuration_directory", cartographer_config,
-                       "-configuration_basename", "footbath_cartographer_2d.lua"],
-            remappings=[("scan", "/scan_high")],
+            arguments=[
+                "-configuration_directory", cartographer_config,
+                "-configuration_basename", "footbath_cartographer_2d.lua",
+            ],
+            remappings=[("scan", LaunchConfiguration("scan_topic"))],
             condition=backend_is("cartographer"),
         ),
         Node(

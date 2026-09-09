@@ -97,7 +97,8 @@ controller_server:
       sim_time: 1.5
       linear_granularity: 0.07
       angular_granularity: 0.05
-      transform_tolerance: 0.2
+      # Tolerate short map->odom scheduling jitter on RK3576.
+      transform_tolerance: 0.5
       xy_goal_tolerance: 0.15
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: true
@@ -157,7 +158,7 @@ local_costmap:
           obstacle_min_range: 0.10
           inf_is_valid: true
       ultrasonic_range_layer:
-        plugin: nav2_costmap_2d::RangeSensorLayer
+        plugin: rk3576_footbath_costmap::RecoveringRangeLayer
         enabled: true
         topics: ["/range/ultrasonic"]
         input_sensor_type: VARIABLE
@@ -185,6 +186,7 @@ global_costmap:
       robot_radius: 0.22
       footprint_padding: 0.02
       track_unknown_space: true
+      # Keep ultrasonic protection local; virtual Range must not block SLAM.
       plugins: [static_layer, obstacle_layer, inflation_layer]
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
@@ -215,6 +217,20 @@ global_costmap:
           obstacle_max_range: 4.5
           obstacle_min_range: 0.10
           inf_is_valid: true
+      # A lidar/ultrasonic disagreement is treated as a temporary glass wall
+      # for global planning. The monitor publishes max_range to clear this
+      # independent layer after its five-second hold expires.
+      glass_range_layer:
+        plugin: nav2_costmap_2d::RangeSensorLayer
+        enabled: true
+        topics: ["/range/suspected_glass"]
+        input_sensor_type: VARIABLE
+        phi: 0.70
+        inflate_cone: 1.0
+        no_readings_timeout: 1.0
+        clear_threshold: 0.20
+        mark_threshold: 0.80
+        clear_on_max_reading: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
@@ -272,7 +288,7 @@ behavior_server:
       plugin: nav2_behaviors/Wait
     global_frame: odom
     robot_base_frame: base_footprint
-    transform_tolerance: 0.2
+    transform_tolerance: 0.5
     simulate_ahead_time: 2.0
     max_rotational_vel: 0.80
     min_rotational_vel: 0.20

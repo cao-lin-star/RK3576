@@ -21,7 +21,7 @@ trap cleanup EXIT INT TERM
 nice -n 10 ros2 run foxglove_bridge foxglove_bridge --ros-args \
   -p address:=127.0.0.1 \
   -p port:=8765 \
-  -p 'topic_whitelist:=["^/scan_(high|low_front)$","^/tf$","^/tf_static$","^/map$","^/map_metadata$","^/odom$","^/imu/data_raw$","^/range/ultrasonic$","^/cmd_vel_(foxglove|manual|auto_limited|selected)$","^/safety/.*$","^/explore/.*$","^/diagnostics$"]' \
+  -p 'topic_whitelist:=["^/scan_(high|low_front|mapping_fused)$","^/tf$","^/tf_static$","^/map$","^/map_metadata$","^/odom$","^/imu/data_raw$","^/range/ultrasonic$","^/cmd_vel_(foxglove|manual|auto_limited|selected)$","^/safety/.*$","^/explore/.*$","^/diagnostics$"]' \
   -p 'client_topic_whitelist:=["^/cmd_vel_foxglove$"]' \
   -p 'service_whitelist:=["(?!)"]' \
   -p 'param_whitelist:=["(?!)"]' \

@@ -9,7 +9,9 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_common</exec_depend>
   <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>rk3576_footbath_costmap</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <test_depend>ament_lint_auto</test_depend>

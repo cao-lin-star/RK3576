@@ -6,8 +6,9 @@ Local G806P Wi-Fi phone UI; deliberately not a generic ROS or shell bridge.
 
 - HTTP clients accepted only from 192.168.8.x or loopback.
 - PBKDF2 PIN, one 15-minute session, 1 s browser heartbeat; ordinary mapping/idle tolerates 2.5 s jitter and automatic modes tolerate 3.0 s.
-- Manual output is released after 0.30 s without refresh; auto-mapping/navigation tolerate 3.0 s of mobile-link jitter before exploration is paused or navigation is cancelled.
+- Manual output is released after 0.30 s without refresh; auto-mapping/navigation remain supervised locally on the RK and are not cancelled by a brief phone disconnect.
 - Manual mapping uses /cmd_vel_manual only while held, <=0.30 m/s, and refuses another manual publisher.
+- Manual and automatic mapping default to /scan_mapping_fused; the phone UI can explicitly fall back to high-only /scan_high before launch. Navigation localization remains high-lidar-only.
 - Goals require navigation mode, initial pose, fresh scan/map/odom and 0.35 m known-free clearance.
 - Automatic motion remains on existing <=0.20 m/s limiter, command mux and F407 chain.
 

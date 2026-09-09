@@ -24,6 +24,25 @@ function renderState(){
   if(state.transitioning)modeText+="（启动中）";
   if(state.launch_error)modeText+="｜故障："+state.launch_error;
   setStatus("modeText",modeText,state.launch_error?"bad":(state.transitioning?"wait":"ok"));
+  const mappingActive=["mapping","auto_mapping"].includes(state.mode);
+  const home=state.home||{};
+  const returning=["preparing","sending","returning","waiting_health","saving_map","handoff_ready","undocking","docking","dock_waiting","dock_preparing","aligning"].includes(home.phase);
+  let homeText=state.home_status_fresh?(home.message||"等待起点"):"返航状态未就绪 / 已失联";
+  if(home.pose)homeText+=`｜起点 (${home.pose.x.toFixed(2)}, ${home.pose.y.toFixed(2)})`;
+  if(Number.isFinite(home.distance_remaining_m)&&returning)homeText+=`｜剩余 ${home.distance_remaining_m.toFixed(2)} m`;
+  if(state.nav_message && (!state.home_status_fresh || home.phase==="ready"))homeText+=`｜${state.nav_message}`;
+  $("#homeStatus").textContent=homeText;
+  $("#returnHome").disabled=!(mappingActive||state.mode==="navigation")||!state.home_status_fresh||!home.available||returning;
+  $("#cancelHome").disabled=!(mappingActive||state.mode==="navigation");
+  $("#pauseMapping").disabled=!mappingActive;
+  $("#finishManualHome").disabled=state.mode!=="mapping"||!state.home_status_fresh||!home.available||returning;
+  const sourceSelect=$("#mappingScanSource");
+  if(mappingActive||!sourceSelect.dataset.initialized){
+    sourceSelect.value=mappingActive?state.mapping_scan_source:(state.mapping_scan_default||"fused");
+    sourceSelect.dataset.initialized="1";
+  }
+  const sourceLabels={fused:"双雷达融合",high:"高位单雷达"};
+  setStatus("scanSource",sourceLabels[mappingActive?state.mapping_scan_source:(state.mapping_scan_default||"fused")]||"--",mappingActive?"ok":"wait");
   const labels={ok:"正常",starting:"启动中",inactive:"未运行",missing:"无数据",stale:"数据超时"};
   for(const [id,k] of [["odom","odom"],["scan","scan"],["mapHealth","map"]]){
     const health=state.health_state?.[k]||(state.healthy?.[k]?"ok":"stale");
@@ -34,12 +53,15 @@ function renderState(){
   setStatus("localization",initialLabels[state.initial_state]||state.initial_state,initialKind);
   const navLabels={idle:"未运行",localizing:"等待定位",localized:"定位完成",sending:"发送目标",active:"导航中",cancel_requested:"取消中",canceled:"已取消",succeeded:"已到达",aborted:"导航失败",rejected:"目标被拒绝",error:"导航错误",localization_failed:"定位失败"};
   let navText=state.nav_message||navLabels[state.nav_state]||state.nav_state;
+  if(state.initial_source==="saved_home")navText+="｜使用建图起点初始化：实车必须位于该点且朝向一致，否则请重新设置位姿";
+  if(state.mode==="navigation"&&!state.saved_map_home&&state.initial_state==="not_set")navText+="｜此地图无有效起点记录，请手动初始化";
   if(state.nav_feedback){navText+=`｜剩余 ${state.nav_feedback.distance_remaining_m.toFixed(2)}m，预计 ${state.nav_feedback.eta_s.toFixed(1)}s，恢复 ${state.nav_feedback.recoveries} 次`;}
   const navBad=["aborted","rejected","error","localization_failed"].includes(state.nav_state);
   const navOk=["localized","succeeded"].includes(state.nav_state);
   setStatus("navStatus",navText,navBad?"bad":(navOk?"ok":"wait"));
   $("#navDetail").textContent=navText;
   const busy=modeRequest||state.transitioning;
+  sourceSelect.disabled=busy||mappingActive;
   $("#startMapping").disabled=busy||state.mode==="mapping";
   $("#startAuto").disabled=busy||state.mode==="auto_mapping";
   $("#startNav").disabled=busy||state.mode==="navigation";
@@ -131,6 +153,7 @@ function draw(){
   const v=viewMetrics(c);
   if(mapImage&&v){ctx.save();ctx.translate(v.cx,v.cy);ctx.rotate(mapView.rotation);ctx.scale(v.scale,v.scale);ctx.drawImage(mapImage,-v.m.width/2,-v.m.height/2,v.m.width,v.m.height);ctx.restore();}
   drawPose(ctx,c,state?.initial_request,"#1565c0","初始");drawPose(ctx,c,state?.goal,"#2e7d32","目标");drawPose(ctx,c,state?.pose,"#e53935","小车");drawPose(ctx,c,previewPose,"#ef8c00",pick==="initial"?"待设初始":"待设目标");
+  drawPose(ctx,c,state?.saved_map_home||state?.home?.pose,"#673ab7",state?.saved_map_home?"建图起点":"起点");
   const degrees=Math.round(mapView.rotation*180/Math.PI);$("#viewText").textContent=`${Math.round(mapView.zoom*100)}% / ${degrees}°`;
 }
 function mapPoint(ev){
@@ -181,13 +204,23 @@ async function requestMode(mode,extra={}){
   catch(e){showActionFeedback("启动失败："+e.message,"bad");alert(e.message)}
   finally{setTimeout(()=>{modeRequest=false;if(state)renderState()},800)}
 }
-$("#startMapping").onclick=()=>requestMode("mapping");
+$("#startMapping").onclick=()=>requestMode("mapping",{mapping_scan_source:$("#mappingScanSource").value});
 $("#saveManual").onclick=()=>runAction($("#saveManual"),"/api/save_manual","正在保存…","手动地图保存请求已提交").catch(()=>{});
-$("#startAuto").onclick=()=>confirm("现场无人靠近且急停可用？")&&requestMode("auto_mapping");
+$("#startAuto").onclick=()=>confirm("现场无人靠近且急停可用？")&&requestMode("auto_mapping",{mapping_scan_source:$("#mappingScanSource").value});
 $("#pauseAuto").onclick=()=>runAction($("#pauseAuto"),"/api/exploration/stop","正在暂停…","自动探索已暂停").catch(()=>{});
+$("#pauseMapping").onclick=()=>runAction($("#pauseMapping"),"/api/exploration/stop","正在暂停…","已暂停，保留当前定位").catch(()=>{});
+$("#returnHome").onclick=()=>{if(confirm("确认保存地图并返航？小车会先导航到起点正前方50cm，对齐后倒车回起点。请确认基站通道畅通。"))runAction($("#returnHome"),"/api/return_home","正在请求返航…","返航请求已接受").catch(()=>{})};
+$("#cancelHome").onclick=()=>runAction($("#cancelHome"),"/api/exploration/stop","正在取消…","返航已取消").catch(()=>{});
+$("#finishManualHome").onclick=async()=>{
+  if(!confirm("确认暂停、请求保存当前手动地图并返航？请确保现场安全。"))return;
+  try{
+    await runAction($("#finishManualHome"),"/api/exploration/stop","正在暂停…","已暂停");
+    await runAction($("#finishManualHome"),"/api/return_home","请求返航…","返航请求已接受");
+  }catch(e){}
+};
 $("#resumeAuto").onclick=()=>runAction($("#resumeAuto"),"/api/exploration/start","正在继续…","自动探索已继续").catch(()=>{});
 $("#saveAuto").onclick=()=>runAction($("#saveAuto"),"/api/exploration/save","正在保存…","地图保存请求已接受").catch(()=>{});
-$("#startNav").onclick=()=>{if(!$("#maps").value){alert("没有可用地图，请先保存地图");return}if(confirm("24V急停可用并已清空现场？"))requestMode("navigation",{map:$("#maps").value})};
+$("#startNav").onclick=()=>{if(!$("#maps").value){alert("没有可用地图，请先保存地图");return}if(confirm($("#departDock").checked?"确认小车位于基站内、车头朝外？首次目标会先直行50cm，再规划导航。":"确认小车已在基站外？将直接规划导航，可能原地转向。"))requestMode("navigation",{map:$("#maps").value,depart_from_dock:$("#departDock").checked})};
 $("#cancel").onclick=()=>runAction($("#cancel"),"/api/cancel","正在取消…","导航取消请求已提交").catch(()=>{});
 $("#emergencyStop").onclick=()=>{if(confirm("确认执行网页急停？这会立即结束当前建图/导航任务并停车。"))runAction($("#emergencyStop"),"/api/emergency_stop","急停执行中…","网页急停已执行，当前任务已结束").catch(()=>{})};
 async function tele(v,a){try{await api("/api/teleop",{linear:v,angular:a,active:a!==0||v!==0})}catch(e){}}

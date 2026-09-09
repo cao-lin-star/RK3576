@@ -2,6 +2,11 @@
 from __future__ import annotations
 import hashlib, hmac, math, secrets, struct, zlib
 ALLOWED_MODES = {"idle", "mapping", "auto_mapping", "navigation"}
+MAPPING_SCAN_SOURCES = {"fused", "high"}
+def normalize_mapping_scan_source(value, default="fused"):
+    source=str(value or default).strip().lower()
+    if source not in MAPPING_SCAN_SOURCES: raise ValueError("invalid mapping scan source")
+    return source
 def clamp_command(linear: float, angular: float) -> tuple[float, float]:
     if not math.isfinite(linear) or not math.isfinite(angular): raise ValueError("non-finite velocity")
     return max(-0.30, min(0.30, linear)), max(-0.80, min(0.80, angular))

@@ -12,7 +12,11 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, Range
 from std_msgs.msg import Bool
 
-from .logic import front_sector_minimum, suspected_glass
+from .logic import (
+    front_sector_minimum,
+    held_detection_active,
+    suspected_glass,
+)
 
 
 class GlassSuspectMonitor(Node):
@@ -30,6 +34,8 @@ class GlassSuspectMonitor(Node):
             "topics.output", "/safety/suspected_glass").value
         self._valid_topic = self.declare_parameter(
             "topics.valid", "/safety/suspected_glass_valid").value
+        self._virtual_topic = self.declare_parameter(
+            "topics.virtual_obstacle", "/range/suspected_glass").value
         self._half_angle = float(self.declare_parameter(
             "front_half_angle_rad", 0.261799388).value)
         self._trigger_max = float(self.declare_parameter(
@@ -42,11 +48,14 @@ class GlassSuspectMonitor(Node):
             "assert_consecutive_samples", 3).value)
         self._clear_samples = int(self.declare_parameter(
             "clear_consecutive_samples", 3).value)
+        self._virtual_hold = float(self.declare_parameter(
+            "virtual_obstacle_hold_s", 5.0).value)
         if min(
             self._half_angle,
             self._trigger_max,
             self._margin,
             self._freshness,
+            self._virtual_hold,
         ) <= 0.0:
             raise ValueError("glass monitor limits must be positive")
         if self._assert_samples < 1 or self._clear_samples < 1:
@@ -61,6 +70,8 @@ class GlassSuspectMonitor(Node):
             Bool, self._output_topic, latched_qos)
         self._valid_publisher = self.create_publisher(
             Bool, self._valid_topic, latched_qos)
+        self._virtual_publisher = self.create_publisher(
+            Range, self._virtual_topic, qos_profile_sensor_data)
         self._diagnostics = self.create_publisher(
             DiagnosticArray, "/diagnostics", 10)
         self.create_subscription(
@@ -87,6 +98,9 @@ class GlassSuspectMonitor(Node):
         self._high_min = math.inf
         self._low_min = math.inf
         self._ultrasonic = math.nan
+        self._last_ultrasonic_message = None
+        self._last_candidate_time = None
+        self._virtual_active = False
         self._last_seen = {"high": None, "low": None, "ultrasonic": None}
         self._assert_count = 0
         self._clear_count = 0
@@ -95,8 +109,8 @@ class GlassSuspectMonitor(Node):
         self._publish_flag()
         self._publish_valid()
         self.get_logger().info(
-            "Suspected-glass monitor is diagnostic only; "
-            "it does not command motion"
+            "Suspected-glass monitor publishes a held virtual range obstacle; "
+            "it never commands chassis motion directly"
         )
 
     def _scan_minimum(self, message: LaserScan) -> float:
@@ -124,6 +138,7 @@ class GlassSuspectMonitor(Node):
             and message.min_range <= value <= message.max_range
         ):
             self._ultrasonic = value
+            self._last_ultrasonic_message = message
         else:
             self._ultrasonic = math.nan
         self._last_seen["ultrasonic"] = time.monotonic()
@@ -144,9 +159,27 @@ class GlassSuspectMonitor(Node):
         message.data = self._inputs_fresh
         self._valid_publisher.publish(message)
 
+    def _publish_virtual_obstacle(self) -> None:
+        source = self._last_ultrasonic_message
+        if source is None:
+            return
+        message = Range()
+        message.header.frame_id = source.header.frame_id
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.radiation_type = source.radiation_type
+        message.field_of_view = source.field_of_view
+        message.min_range = source.min_range
+        message.max_range = source.max_range
+        message.range = (
+            float(source.range) if self._virtual_active
+            else float(source.max_range)
+        )
+        self._virtual_publisher.publish(message)
+
     def _evaluate(self) -> None:
+        now = time.monotonic()
         previous_fresh = self._inputs_fresh
-        self._inputs_fresh = self._all_fresh(time.monotonic())
+        self._inputs_fresh = self._all_fresh(now)
         if self._inputs_fresh != previous_fresh:
             self._publish_valid()
         candidate = self._inputs_fresh and suspected_glass(
@@ -157,6 +190,7 @@ class GlassSuspectMonitor(Node):
             self._margin,
         )
         if candidate:
+            self._last_candidate_time = now
             self._assert_count += 1
             self._clear_count = 0
             if (
@@ -171,6 +205,16 @@ class GlassSuspectMonitor(Node):
             if self._suspected and self._clear_count >= self._clear_samples:
                 self._suspected = False
                 self._publish_flag()
+
+        self._virtual_active = (
+            self._last_ultrasonic_message is not None
+            and (
+                self._suspected
+                or held_detection_active(
+                    now, self._last_candidate_time, self._virtual_hold)
+            )
+        )
+        self._publish_virtual_obstacle()
 
     @staticmethod
     def _kv(key: str, value: object) -> KeyValue:
@@ -202,7 +246,9 @@ class GlassSuspectMonitor(Node):
             self._kv("ultrasonic_m", self._ultrasonic),
             self._kv("high_front_min_m", self._high_min),
             self._kv("low_front_min_m", self._low_min),
-            self._kv("diagnostic_only", True),
+            self._kv("diagnostic_only", False),
+            self._kv("virtual_obstacle_active", self._virtual_active),
+            self._kv("virtual_obstacle_hold_s", self._virtual_hold),
         ]
         array = DiagnosticArray()
         array.header.stamp = self.get_clock().now().to_msg()

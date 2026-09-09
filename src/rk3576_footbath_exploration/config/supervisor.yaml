@@ -1,6 +1,35 @@
 exploration_supervisor:
   ros__parameters:
     auto_start: true
+    dock:
+      enabled: true
+      auto_exit: false  # launch enables only when an explorer is requested
+      distance_m: 0.50
+      speed_mps: 0.05
+      distance_tolerance_m: 0.01
+      cross_track_limit_m: 0.04
+      heading_limit_rad: 0.10
+      segment_timeout_s: 45.0
+      robot_radius_m: 0.22
+      obstacle_margin_m: 0.01
+      align_speed_rad_s: 0.15
+      align_tolerance_rad: 0.04
+      align_timeout_s: 60.0
+      align_progress_timeout_s: 10.0
+      # Alignment starts within 4 cm of the ideal staging point. Small shifts
+      # are reported; hard shifts are stopped immediately and confirmed for
+      # 0.6 s. The final dock corridor is rechecked before reversing.
+      align_map_shift_limit_m: 0.02
+      align_odom_shift_limit_m: 0.02
+      align_map_hard_limit_m: 0.08
+      align_odom_hard_limit_m: 0.05
+      staging_longitudinal_tolerance_m: 0.06
+    return_home:
+      on_complete: true
+      timeout_s: 300.0
+      health_recovery_timeout_s: 8.0
+      health_stable_s: 1.0
+      health_max_recoveries: 5
     startup_timeout_s: 60.0
     minimum_startup_hold_s: 3.0
     healthy_cycles_required: 5

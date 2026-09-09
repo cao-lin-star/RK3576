@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import os
+import json
+import math
+import hashlib
+import yaml
 import re
 import threading
 import time
@@ -65,11 +69,33 @@ class MapStore:
         if image is not None and image.is_file():
             files.append(image)
         prefix = yaml_path.with_suffix("")
-        for suffix in (".posegraph.data", ".posegraph.posegraph"):
+        for suffix in (".posegraph.data", ".posegraph.posegraph", ".home.json"):
             companion = Path(str(prefix) + suffix)
             if companion.is_file():
                 files.append(companion)
         return files, image
+
+    def home(self, raw_path):
+        yaml_path = self.checked_yaml(raw_path)
+        try:
+            sidecar = yaml_path.with_suffix('.home.json')
+            if sidecar.is_symlink() or sidecar.stat().st_size > 8192:
+                return None
+            data = json.loads(sidecar.read_text(encoding='utf-8'))
+            pose = data['pose']
+            if data['version'] != 1 or data['frame_id'] != 'map':
+                return None
+            if not all(isinstance(pose[k], (int,float)) and math.isfinite(pose[k]) for k in ('x','y','yaw')):
+                return None
+            image = self._image_path(yaml_path)
+            grid = yaml.safe_load(yaml_path.read_text(encoding='utf-8'))
+            if data['geometry'] != dict(resolution=grid['resolution'], origin=grid['origin']):
+                return None
+            if image is None or hashlib.sha256(image.read_bytes()).hexdigest() != data['image_sha256']:
+                return None
+            return {k:float(pose[k]) for k in ('x','y','yaw')}
+        except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+            return None
 
     def entries(self, active_path=""):
         with self._lock:
@@ -117,6 +143,8 @@ class MapStore:
                     target = yaml_path.with_name(name + ".posegraph.data")
                 elif source.name.endswith(".posegraph.posegraph"):
                     target = yaml_path.with_name(name + ".posegraph.posegraph")
+                elif source.name.endswith('.home.json'):
+                    target = yaml_path.with_name(name + '.home.json')
                 else:
                     continue
                 moves.append((source, target))
