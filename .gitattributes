@@ -1,4 +1,6 @@
-* text=auto
+# Linux is the deployment target, including extensionless launch scripts.
+# Explicit Windows script rules below override this default.
+* text=auto eol=lf
 
 *.sh      text eol=lf
 *.py      text eol=lf
