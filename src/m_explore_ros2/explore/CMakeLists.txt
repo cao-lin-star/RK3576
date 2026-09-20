@@ -114,6 +114,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${GAZEBO_CXX_FLAGS}")
 ## Testing ##
 #############
 if(BUILD_TESTING)
+  add_executable(test_progress_guard test/test_progress_guard.cpp)
+  target_include_directories(test_progress_guard PRIVATE include)
+  target_compile_options(test_progress_guard PRIVATE -UNDEBUG)
+  add_test(NAME test_progress_guard COMMAND test_progress_guard)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   set(ament_cmake_copyright_FOUND TRUE)

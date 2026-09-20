@@ -130,7 +130,9 @@ local_costmap:
       # 实测最大外廓半径0.22 m，另加0.02 m规划余量。
       robot_radius: 0.22
       footprint_padding: 0.02
-      plugins: [obstacle_layer, ultrasonic_range_layer, inflation_layer]
+      plugins: [obstacle_layer, ultrasonic_range_layer, hazard_layer, inflation_layer]
+      hazard_layer:
+        plugin: rk3576_footbath_costmap::HazardLayer
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
@@ -187,7 +189,9 @@ global_costmap:
       footprint_padding: 0.02
       track_unknown_space: true
       # Keep ultrasonic protection local; virtual Range must not block SLAM.
-      plugins: [static_layer, obstacle_layer, inflation_layer]
+      plugins: [static_layer, obstacle_layer, hazard_layer, inflation_layer]
+      hazard_layer:
+        plugin: rk3576_footbath_costmap::HazardLayer
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
         map_subscribe_transient_local: true

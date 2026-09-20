@@ -26,6 +26,10 @@ function renderState(){
   setStatus("modeText",modeText,state.launch_error?"bad":(state.transitioning?"wait":"ok"));
   const mappingActive=["mapping","auto_mapping"].includes(state.mode);
   const home=state.home||{};
+  if(state.home_status_fresh && ["hazard_recovery","paused_fault"].includes(home.supervisor_state)) {
+    setStatus("modeText",modeText+"｜"+(home.supervisor_reason||"恢复已暂停，请人工处理"),
+              home.supervisor_state==="paused_fault"?"bad":"wait");
+  }
   const returning=["preparing","sending","returning","waiting_health","saving_map","handoff_ready","undocking","docking","dock_waiting","dock_preparing","aligning"].includes(home.phase);
   let homeText=state.home_status_fresh?(home.message||"等待起点"):"返航状态未就绪 / 已失联";
   if(home.pose)homeText+=`｜起点 (${home.pose.x.toFixed(2)}, ${home.pose.y.toFixed(2)})`;

@@ -113,6 +113,13 @@ Explore::Explore()
   status_pub_ = this->create_publisher<explore_lite_msgs::msg::ExploreStatus>("explore/status", status_qos);
 
   // Subscription to resume or stop exploration
+  hazard_subscription_ = this->create_subscription<geometry_msgs::msg::PoseArray>(
+      "/safety/hazard_zones", rclcpp::QoS(1).transient_local(),
+      [this](geometry_msgs::msg::PoseArray::ConstSharedPtr msg) {
+        if (msg->header.frame_id == costmap_client_.getGlobalFrameID()) {
+          hazard_zones_ = msg->poses;
+        }
+      });
   resume_subscription_ = this->create_subscription<std_msgs::msg::Bool>(
       "explore/resume", 10,
       std::bind(&Explore::resumeCallback, this, std::placeholders::_1));
@@ -247,6 +254,42 @@ void Explore::makePlan()
   }
   // find frontiers
   auto pose = costmap_client_.getRobotPose();
+  if (recovery_cancel_pending_) {
+    if (this->now().seconds() - recovery_cancel_at_ > 10.0) {
+      stop(false);
+      auto status = explore_lite_msgs::msg::ExploreStatus();
+      status.status = "exploration_blocked";
+      status_pub_->publish(status);
+      RCLCPP_ERROR(logger_, "Recovery cancellation did not terminate in 10s; operator review required");
+    }
+    return;  // Never overlap a replacement goal with an unconfirmed cancellation.
+  }
+  const bool motion_stalled = progress_guard_.stalled(
+      this->now().seconds(), pose.position.x, pose.position.y, progress_timeout_);
+  if (motion_stalled && !resuming_) {
+    if (recovery_attempts_ >= 3 || (goal_active_ && !navigation_goal_handle_)) {
+      stop(false);
+      auto status = explore_lite_msgs::msg::ExploreStatus();
+      status.status = "exploration_blocked";
+      status_pub_->publish(status);
+      RCLCPP_WARN(logger_, "No motion after bounded frontier retries; operator review required");
+      return;
+    }
+    ++recovery_attempts_;
+    progress_guard_.succeeded(this->now().seconds(), prev_goal_.x, prev_goal_.y);
+    RCLCPP_WARN(logger_, "No motion: retry %u/3, cooling frontier (%.2f, %.2f) for 60s",
+                recovery_attempts_, prev_goal_.x, prev_goal_.y);
+    progress_guard_.reset(this->now().seconds(), pose.position.x, pose.position.y);
+    if (navigation_goal_handle_) {
+      recovery_cancel_pending_ = true;
+      recovery_cancel_at_ = this->now().seconds();
+      move_base_client_->async_cancel_goal(navigation_goal_handle_);
+    }
+    return;
+  }
+  // Keep a valid goal until Nav2 finishes/recovery times out. Small changes in
+  // frontier centroids must not repeatedly preempt and reset Nav2 progress.
+  if (goal_active_ && !resuming_) return;
   // get frontiers sorted according to cost
   auto frontiers = search_.searchFrom(pose.position);
   RCLCPP_DEBUG(logger_, "found %lu frontiers", frontiers.size());
@@ -275,11 +318,11 @@ void Explore::makePlan()
                          return goalOnBlacklist(f.centroid);
                        });
   if (frontier == frontiers.end()) {
-    RCLCPP_WARN(logger_, "All frontiers traversed/tried out, stopping.");
+    RCLCPP_WARN(logger_, "Frontiers exist but all are blocked/cooling down; operator review required.");
     auto status_msg = explore_lite_msgs::msg::ExploreStatus();
-    status_msg.status = explore_lite_msgs::msg::ExploreStatus::EXPLORATION_COMPLETE;
+    status_msg.status = "exploration_blocked";
     status_pub_->publish(status_msg);
-    stop(true);
+    stop(false);
     return;
   }
   geometry_msgs::msg::Point target_position = frontier->centroid;
@@ -288,16 +331,14 @@ void Explore::makePlan()
   bool same_goal = same_point(prev_goal_, target_position);
 
   prev_goal_ = target_position;
-  if (!same_goal || prev_distance_ > frontier->min_distance) {
+  if (!same_goal || prev_distance_ - frontier->min_distance >= 0.05) {
     // we have different goal or we made some progress
     last_progress_ = this->now();
     prev_distance_ = frontier->min_distance;
   }
   // black list if we've made no progress for a long time
-  if (goal_active_ &&
-      (this->now() - last_progress_ >
-       tf2::durationFromSec(progress_timeout_)) &&
-      !resuming_) {
+  if (goal_active_ && this->now() - last_progress_ >
+      tf2::durationFromSec(progress_timeout_) && !resuming_) {
     addToBlacklist(target_position, "no exploration progress");
     goal_active_ = false;
     if (navigation_goal_handle_) {
@@ -389,6 +430,11 @@ void Explore::returnToInitialPose()
 }
 bool Explore::goalOnBlacklist(const geometry_msgs::msg::Point& goal)
 {
+  if (progress_guard_.cooling(this->now().seconds(), goal.x, goal.y)) return true;
+  for (const auto &zone : hazard_zones_) {
+    if (std::hypot(goal.x-zone.position.x, goal.y-zone.position.y)
+        <= zone.position.z + 0.30) return true;
+  }
   for (const auto& frontier_goal : frontier_blacklist_) {
     const double x_diff = goal.x - frontier_goal.x;
     const double y_diff = goal.y - frontier_goal.y;
@@ -419,11 +465,19 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
 
   navigation_goal_handle_.reset();
   goal_active_ = false;
+  if (recovery_cancel_pending_) {
+    recovery_cancel_pending_ = false;
+    const auto pose = costmap_client_.getRobotPose();
+    progress_guard_.reset(this->now().seconds(), pose.position.x, pose.position.y);
+    RCLCPP_INFO(logger_, "Previous navigation terminated; next timer may select another frontier");
+    return;
+  }
   switch (result.code) {
     case rclcpp_action::ResultCode::SUCCEEDED:
       RCLCPP_DEBUG(logger_, "Goal was successful");
-      last_progress_ = this->now();
-      prev_distance_ = 0;
+      progress_guard_.succeeded(this->now().seconds(), frontier_goal.x, frontier_goal.y);
+      RCLCPP_INFO(logger_, "Reached frontier (%.2f, %.2f); exclude 0.35m neighborhood for 60s",
+                  frontier_goal.x, frontier_goal.y);
       break;
     case rclcpp_action::ResultCode::ABORTED:
 #ifdef NAV2_RESULT_HAS_ERROR_CODE
@@ -460,7 +514,8 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
 
   // Because of the 1-thread-executor nature of ros2 I think timer is not
   // needed.
-  makePlan();
+  // The existing planning timer selects the next frontier; do not recurse
+  // from success callbacks or bypass planner_frequency.
 }
 
 void Explore::start()
@@ -474,6 +529,7 @@ void Explore::start()
 void Explore::stop(bool finished_exploring)
 {
   paused_ = true;
+  recovery_cancel_pending_ = false;
   ++request_generation_;
   RCLCPP_INFO(logger_, "Exploration stopped.");
 
@@ -503,7 +559,10 @@ void Explore::resume()
     return;
   }
   paused_ = false;
+  recovery_attempts_ = 0;
   resuming_ = true;
+  const auto pose = costmap_client_.getRobotPose();
+  progress_guard_.reset(this->now().seconds(), pose.position.x, pose.position.y);
   RCLCPP_INFO(logger_, "Exploration resuming.");
   auto status_msg = explore_lite_msgs::msg::ExploreStatus();
   status_msg.status = explore_lite_msgs::msg::ExploreStatus::EXPLORATION_IN_PROGRESS;

@@ -69,7 +69,7 @@ class MapStore:
         if image is not None and image.is_file():
             files.append(image)
         prefix = yaml_path.with_suffix("")
-        for suffix in (".posegraph.data", ".posegraph.posegraph", ".home.json"):
+        for suffix in (".posegraph.data", ".posegraph.posegraph", ".home.json", ".hazards.json"):
             companion = Path(str(prefix) + suffix)
             if companion.is_file():
                 files.append(companion)
@@ -145,6 +145,8 @@ class MapStore:
                     target = yaml_path.with_name(name + ".posegraph.posegraph")
                 elif source.name.endswith('.home.json'):
                     target = yaml_path.with_name(name + '.home.json')
+                elif source.name.endswith('.hazards.json'):
+                    target = yaml_path.with_name(name + '.hazards.json')
                 else:
                     continue
                 moves.append((source, target))

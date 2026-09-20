@@ -35,6 +35,7 @@ enum class MessageType : uint8_t
   kStop = 0x04,
   kRangeStatus = 0x05,
   kImuRaw = 0x06,
+  kControlSource = 0x07,
 };
 
 struct Frame

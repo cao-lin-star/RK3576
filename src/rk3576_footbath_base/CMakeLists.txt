@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.8)
 project(rk3576_footbath_base)
+find_package(std_msgs REQUIRED)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -22,7 +23,7 @@ target_include_directories(footbath_protocol PUBLIC
 add_executable(stm32_serial_bridge src/stm32_serial_bridge.cpp)
 target_link_libraries(stm32_serial_bridge footbath_protocol)
 ament_target_dependencies(stm32_serial_bridge
-  rclcpp geometry_msgs nav_msgs sensor_msgs tf2_ros diagnostic_msgs)
+  rclcpp geometry_msgs nav_msgs sensor_msgs tf2_ros diagnostic_msgs std_msgs)
 
 install(TARGETS footbath_protocol stm32_serial_bridge
   ARCHIVE DESTINATION lib

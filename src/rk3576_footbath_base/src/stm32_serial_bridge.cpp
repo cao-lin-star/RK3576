@@ -39,6 +39,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/range.hpp>
+#include <std_msgs/msg/u_int8.hpp>
 
 #include "rk3576_footbath_base/protocol.hpp"
 
@@ -122,6 +123,7 @@ public:
     }
 
     odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>(odom_topic_, rclcpp::QoS(20));
+    source_publisher_ = create_publisher<std_msgs::msg::UInt8>("/chassis/control_source", 10);
     imu_publisher_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS());
     tof_left_publisher_ =
       create_publisher<sensor_msgs::msg::Range>(tof_left_topic_, rclcpp::SensorDataQoS());
@@ -373,6 +375,14 @@ private:
           }
           break;
         }
+      case MessageType::kControlSource: {
+          if (frame.payload.size() == 1 && frame.payload[0] <= 3) {
+            std_msgs::msg::UInt8 source;
+            source.data = frame.payload[0];
+            source_publisher_->publish(source);
+          } else { ++payload_error_count_; }
+          break;
+        }
       case MessageType::kImuRaw: {
           ImuRawPayload imu;
           if (!decode_imu_raw(frame.payload, imu)) {
@@ -550,6 +560,7 @@ private:
   double heartbeat_timeout_s_{2.0};
   double max_linear_mps_{1.0};
   double max_angular_rps_{1.5};
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr source_publisher_;
   bool stop_on_fault_{true};
   bool publish_tf_{true};
   std::string odom_frame_;

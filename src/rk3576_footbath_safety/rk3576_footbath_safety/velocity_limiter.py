@@ -44,6 +44,9 @@ class AutoCmdVelLimiter(Node):
             raise ValueError("angular, command and lease limits must be positive")
 
         self._publisher = self.create_publisher(Twist, self._output_topic, 10)
+        self._recovery_active = False
+        self.create_subscription(Bool, '/safety/recovery_active', self._on_recovery_active, 10)
+        self.create_subscription(Twist, '/cmd_vel_recovery', self._on_recovery, 10)
         self._diagnostics = self.create_publisher(
             DiagnosticArray, "/diagnostics", 10)
         self.create_subscription(Twist, self._input_topic, self._on_command, 10)
@@ -92,7 +95,29 @@ class AutoCmdVelLimiter(Node):
         elif not was_active:
             self.get_logger().info("Fresh automatic motion lease received")
 
+    def _on_recovery_active(self, message):
+        if bool(message.data) == self._recovery_active:
+            return
+        self._recovery_active = bool(message.data)
+        self._last_command = None
+        self._publish_zero()
+
+    def _on_recovery(self, message):
+        if not self._recovery_active:
+            return
+        if (not math.isfinite(message.linear.x) or message.angular.z != 0.0
+                or not -.03 <= message.linear.x <= 0.):
+            self._last_command = None
+            self._publish_zero()
+            return
+        self._forward_command(message)
+
     def _on_command(self, message: Twist) -> None:
+        if self._recovery_active:
+            return
+        self._forward_command(message)
+
+    def _forward_command(self, message: Twist) -> None:
         now = time.monotonic()
         if not self._lease_active(now):
             self._rejected_count += 1

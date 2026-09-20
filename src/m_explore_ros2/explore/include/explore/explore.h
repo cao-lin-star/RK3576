@@ -40,7 +40,9 @@
 
 #include <explore/costmap_client.h>
 #include <explore/frontier_search.h>
+#include <explore/progress_guard.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
 #include <tf2_ros/transform_listener.hpp>
 
 #include <chrono>
@@ -130,6 +132,12 @@ private:
   void resumeCallback(const std_msgs::msg::Bool::SharedPtr msg);
 
   std::vector<geometry_msgs::msg::Point> frontier_blacklist_;
+  ProgressGuard progress_guard_;
+  bool recovery_cancel_pending_{false};
+  double recovery_cancel_at_{0};
+  unsigned recovery_attempts_{0};
+  std::vector<geometry_msgs::msg::Pose> hazard_zones_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr hazard_subscription_;
   geometry_msgs::msg::Point prev_goal_;
   double prev_distance_;
   rclcpp::Time last_progress_;

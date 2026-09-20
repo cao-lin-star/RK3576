@@ -9,8 +9,8 @@
     start_paused: true
     visualize: true
     planner_frequency: 0.20
-    # Bound a stalled goal before Nav2 can repeat a long recovery sequence.
-    progress_timeout: 20.0
+    # Allow Nav2's 30s progress checker to act before bounded frontier retries.
+    progress_timeout: 45.0
     # 0.65 m prevents choosing an adjacent point on the same glass wall.
     blacklist_radius: 0.65
     potential_scale: 3.0

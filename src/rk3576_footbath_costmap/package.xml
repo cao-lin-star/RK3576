@@ -9,6 +9,8 @@
   <depend>nav2_costmap_2d</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>

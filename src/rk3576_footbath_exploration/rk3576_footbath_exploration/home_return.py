@@ -436,6 +436,7 @@ class HomeReturn:
             available=self.pose is not None, distance_remaining_m=self.distance,
             recovery_count=self.recovery_count, last_health_error=self.last_health_error,
             supervisor_state=self.node._state, auto_return=self.auto_return,
+            supervisor_reason=self.node._reason,
             dock_enabled=self.dock.enabled, dock_distance_m=self.dock.distance,
             dock_progress_m=self.dock.progress,
             dock_exit_complete=self.dock.exit_complete,

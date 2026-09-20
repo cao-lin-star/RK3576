@@ -45,6 +45,7 @@ def generate_launch_description():
             parameters=[os.path.join(get_package_share_directory("rk3576_footbath_exploration"),
                                      "config", "supervisor.yaml"),
                         {"auto_start": False, "return_home.localization_mode": True,
+                         "hazard_recovery.map_file": LaunchConfiguration("map"),
                          "dock.departure_required": ParameterValue(
                              LaunchConfiguration("depart_from_dock"), value_type=bool),
                          "dock.navigation_session": ParameterValue(PythonExpression([

@@ -1,4 +1,7 @@
 <library path="recovering_range_layer">
+  <class name="rk3576_footbath_costmap::HazardLayer" type="rk3576_footbath_costmap::HazardLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Session cliff and temporary sonar regions independent of laser clearing.</description>
+  </class>
   <class name="rk3576_footbath_costmap::RecoveringRangeLayer" type="rk3576_footbath_costmap::RecoveringRangeLayer" base_class_type="nav2_costmap_2d::Layer">
     <description>Retains RangeSensorLayer obstacle handling and recovers freshness after valid transformed readings.</description>
   </class>

@@ -27,6 +27,7 @@ from explore_lite_msgs.msg import ExploreStatus
 from geometry_msgs.msg import Twist
 from lifecycle_msgs.srv import GetState
 from .home_return import HomeReturn
+from .hazard_recovery import HazardRecovery
 from .map_home import save_home
 from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
@@ -206,6 +207,7 @@ class ExplorationSupervisor(Node):
             get_package_share_directory('rk3576_footbath_exploration'),
             'behavior_trees', 'exploration_limited_recovery.xml')
         self.home = HomeReturn(self)
+        self.hazard = HazardRecovery(self)
         if self.home.localization:
             self._auto_start = False
             for name in ('amcl', 'map_server'):
@@ -275,6 +277,10 @@ class ExplorationSupervisor(Node):
 
     def _status_callback(self, message: ExploreStatus) -> None:
         self._last_explore_status = message.status
+        if message.status == 'exploration_blocked' and self._state == self.RUNNING:
+            self._fault_latched = True
+            self._pause(self.PAUSED_FAULT, '探索无实际进展或剩余目标受阻，已停车；请人工检查后继续')
+            return
         if message.status == ExploreStatus.EXPLORATION_COMPLETE:
             if self._state == self.COMPLETE:
                 return
@@ -400,6 +406,16 @@ class ExplorationSupervisor(Node):
         return True
 
     def _start_service(self, _request: Trigger.Request, response: Trigger.Response):
+        if self.hazard.active:
+            response.success = False
+            response.message = '正在危险恢复，不能重复启动探索'
+            return response
+        if self.hazard.phase == 'failed':
+            allowed, reason = self.hazard.reset_allowed()
+            if not allowed:
+                response.success = False
+                response.message = reason
+                return response
         if self.home.localization:
             response.success = False
             response.message = '当前是已保存地图导航模式，不能继续探索'
@@ -463,6 +479,13 @@ class ExplorationSupervisor(Node):
             now, self._last_seen, self._maximum_age,
             ("scan", "map", "odom"))
         healthy = healthy and self._navigation_ready()
+        if self.hazard.tick(healthy):
+            if now - self._last_diagnostic_publish >= 1.0:
+                self.home.message = self._reason
+                self.home.publish()
+                self._publish_diagnostics(healthy)
+                self._last_diagnostic_publish = now
+            return
         self.home.tick(healthy)
         self._healthy_cycles = self._healthy_cycles + 1 if healthy else 0
 
@@ -602,6 +625,7 @@ class ExplorationSupervisor(Node):
     def _persist_home(self):
         try:
             save_home(self._last_map_prefix, self.home.pose)
+            self.hazard.save(self._last_map_prefix)
         except Exception as error:
             self.get_logger().error('地图已保存但起点保存失败，必须手动初始化: '+str(error))
 
