@@ -27,7 +27,10 @@ class ReturnTransition:
         g = self.g
         data = validate_handoff(data.copy())
         path = g.map_store.checked_yaml(data['map_path'])
-        g._launch('navigation', str(path), return_home=data['pose'])
+        if data.get('return_kind') == 'start':
+            g._launch('navigation', str(path), return_home=data['pose'], return_dock=False)
+        else:
+            g._launch('navigation', str(path), return_home=data['pose'])
         self.pending = data
         self.deadline = time.monotonic() + 75.0
         self.stage = 'localizing'

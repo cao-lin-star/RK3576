@@ -38,6 +38,8 @@ def generate_launch_description():
         "tof_right_yaw": "-0.7853981634",
         "ultrasonic_x": "0.135", "ultrasonic_y": "0.0", "ultrasonic_z": "0.24",
         "ultrasonic_yaw": "0.0",
+        "ultrasonic_side_x": "0.084853", "ultrasonic_side_y": "0.084853",
+        "ultrasonic_side_z": "0.24", "ultrasonic_side_yaw": "0.7853981634",
     }
     command = ["xacro ", *xacro_file]
     for name in defaults:

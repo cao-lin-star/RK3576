@@ -2,15 +2,25 @@
 <header><h1>智能足浴桶</h1><span id="link">未登录</span></header>
 <section id="login" class="card"><h2>本地控制登录</h2><input id="pin" type="password" inputmode="numeric" placeholder="至少6位控制PIN"><button id="loginBtn">登录</button><p>仅允许连接G806P Wi-Fi的现场手机访问。</p></section>
 <main id="app" hidden>
-<section class="card status"><div><b>模式</b><span id="modeText">idle</span></div><div><b>建图雷达源</b><span id="scanSource">--</span></div><div><b>底盘/里程计</b><span id="odom">--</span></div><div><b>当前雷达数据</b><span id="scan">--</span></div><div><b>地图</b><span id="mapHealth">--</span></div><div><b>定位</b><span id="localization">未设置</span></div><div><b>导航</b><span id="navStatus">未运行</span></div></section>
+<section class="card"><h2>左右超声波保护</h2><button id="sideSonarToggle" type="button">切换左右超声波</button><p id="sideSonarState" role="status">等待状态</p><p>仅空闲模式可切换，下一次启动任务时由底盘确认。左右探头测距≤12cm触发近障保护，>12cm不新增限制。关闭后不参与左右近障停车与新增障碍记录，仍保留采样；已确认的本次任务障碍记录不会因此清除。前方超声波、ToF、双雷达不变。网页服务重启后默认开启。请勿带电拔线。</p></section>
+<section class="card status"><div><b>模式</b><span id="modeText">idle</span></div><div><b>建图倒计时</b><span id="mappingCountdown" role="timer">未启动</span></div><div><b>建图雷达源</b><span id="scanSource">--</span></div><div><b>底盘/里程计</b><span id="odom">--</span></div><div><b>当前雷达数据</b><span id="scan">--</span></div><div><b>地图</b><span id="mapHealth">--</span></div><div><b>定位</b><span id="localization">未设置</span></div><div><b>导航</b><span id="navStatus">未运行</span></div></section>
 <section class="card safetyActions"><button id="emergencyStop" class="danger emergency" type="button">网页急停（结束当前任务）</button><p id="actionFeedback" class="hint" role="status">自动任务由 RK 本地监督器维持；手机断线不会取消。手动遥控断线仍会在 300 ms 内停车。</p></section>
 <section class="card"><label for="mappingScanSource"><b>手动/自动建图雷达源</b></label><select id="mappingScanSource"><option value="fused">双雷达融合（默认）</option><option value="high">高位单雷达（回退）</option></select><p class="hint">仅在启动建图前可切换；自动导航定位仍使用高位雷达。</p></section>
-<section class="card"><h2>本次建图起点 / 返航</h2><p id="homeStatus" role="status">尚未记录起点</p><button id="pauseMapping" type="button">暂停建图（保留定位）</button><button id="returnHome" type="button">回到起点</button><button id="cancelHome" type="button">取消返航 / 停车</button><button id="finishManualHome" type="button">保存手动地图并返航</button><p>启动后先保持静止，等待“起点已记录”。自动探索完成会尝试返航；返航仍受避障、定位和通信保护约束。急停结束任务后不能直接返航。</p></section>
+<section class="card"><h2>基站与本次初始化位置</h2><p id="homeStatus" role="status">尚未记录基站起点</p><button id="pauseMapping" type="button">暂停建图（保留定位）</button><button id="returnHome" type="button">回基站（建图起点）</button><button id="returnInitial" type="button" disabled>回本次初始化位置</button><p id="initialReturnStatus" class="hint">需在自动导航中手动设置初始位姿并等待确认。</p><button id="cancelHome" type="button">取消返航 / 停车</button><button id="finishManualHome" type="button">保存手动地图并回基站</button><p>基站是地图记录的建图起点，回基站仍先导航至前方50cm、对齐后倒车。本次初始化位置是当前导航会话手动选定的位置，仅普通导航返回，不执行基站倒车，也不覆盖基站记录；切地图或结束会话后清除。急停结束任务后不能直接返航。</p></section>
 <nav><button data-tab="map" class="active">地图</button><button data-tab="manual">手动建图</button><button data-tab="auto">自动建图</button><button data-tab="nav">自动导航</button><button data-tab="mapsManage">地图管理</button></nav>
 <section id="map" class="tab card">
 <div class="mapTools" aria-label="地图视图控制"><button id="zoomOut" type="button">缩小 −</button><button id="zoomIn" type="button">放大 ＋</button><button id="rotateLeft" type="button">左转 ↺</button><button id="rotateRight" type="button">右转 ↻</button><button id="resetView" type="button">复位</button><span id="viewText">100% / 0°</span></div>
+<div class="mapTools" aria-label="障碍编辑">
+<button id="pauseObstacle" type="button">暂停任务并编辑</button><button id="resumeObstacle" type="button" disabled>继续建图</button>
+<button id="saveObstacleMap" type="button" disabled>保存编辑后的地图</button>
+<label>方式 <select id="obstacleShape"><option value="line">拖动画线</option><option value="point">点选</option></select></label>
+<button id="addObstacle" type="button" disabled>手动增加障碍</button><button id="deleteObstacle" type="button" disabled>手动删除障碍</button>
+<label>半径 / 线条半宽(cm) <input id="obstacleRadius" type="number" min="2" max="15" step="1" value="4" style="width:65px"></label>
+<button id="applyObstacle" type="button" disabled>确认修改</button><button id="cancelObstacle" type="button">取消选择</button>
+</div><p id="obstacleStatus" role="status" class="hint">等待障碍状态</p>
+<p class="hint">绿旗/绿线：当前探索目标/路线；红色虚线圈：受阻探索点（两次失败后本次不再重试，不是墙）；红色实心：避障记录；黄色空心：停稳观察点，不新增规划限制。建图中先暂停任务，停稳后编辑，确认生效后点“继续建图”。编辑后请保存地图；导航时加载该地图再暂停编辑，修改会自动保存到当前地图。拖动绘制直线，可分段连接；删除为沿线擦除补充记录。删除仅移除补充障碍，不能擦除激光地图上的墙。</p>
 <div class="canvasWrap"><canvas id="canvas"></canvas></div>
-<p id="mapPickHint" class="hint">红色箭头是小车当前位置。普通状态可拖动地图；设置位姿时请按住地图并沿车头方向拖动。</p>
+<p id="mapPickHint" class="hint">红色为小车、紫色为基站、蓝色为本次初始化位置。普通状态可拖动地图；设置位姿时请按住地图并沿车头方向拖动。</p>
 <p id="mapInfo">等待地图...</p><button id="refreshMap">刷新地图</button>
 </section>
 <section id="manual" class="tab card" hidden><h2>手动建图</h2><button id="startMapping">启动手动建图</button><button id="saveManual">保存当前地图</button><div class="joy"><button data-v="0.30,0">前进</button><div><button data-v="0,0.5">左转</button><button class="stop" data-v="0,0">停止</button><button data-v="0,-0.5">右转</button></div><button data-v="-0.30,0">后退</button></div><p>必须持续按住按钮；松手、锁屏或断网将在300ms内停车。</p></section>

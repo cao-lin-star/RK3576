@@ -18,12 +18,14 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt8
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 from .logic import ALLOWED_MODES, clamp_command, new_session_token, normalize_mapping_scan_source, occupancy_png, target_is_clear, valid_pose, verify_pin
 from .map_store import MapStore
 from .return_transition import ReturnTransition
+from .navigation_owner import NavigationOwner
+from .return_destinations import matches_manual_initial
 
 ENV=Path(os.environ.get("FOOTBATH_MOBILE_ENV","/etc/footbath/mobile.env"))
 def env_values(path):
@@ -54,7 +56,12 @@ class Gateway(Node):
         self.failed_logins=0; self.login_block_until=0.0
         self.mode="idle"; self.child=None; self.child_pgid=None; self.map_name=""; self.save_state="idle"; self.mapping_scan_source=""
         self.nav_state="idle"; self.nav_message=""; self.nav_feedback=None; self.goal_pose=None
+        self.nav_owner=NavigationOwner(); self.goal_handle=None
+        self.control_source=None; self.control_source_at=0.0
+        self.side_ultrasonic_enabled=True
+        self.side_ultrasonic_actual=None; self.side_ultrasonic_seen=0.0
         self.initialized=False; self.initial_state="not_set"; self.initial_request=None; self.initial_request_at=0.0; self.last_amcl_pose_at=0.0
+        self.initial_request_ros_ns=0; self.confirmed_initial_pose=None
         self.transitioning=False; self.mode_started_at=0.0; self.launch_error=""
         self.latest={"scan_high":None,"scan_fused":None,"odom":None,"map":None}; self.grid=None; self.grid_png=None; self.pose_map=None
         # Cache expensive ROS graph/filesystem queries; HTTP state polling must not
@@ -84,7 +91,19 @@ class Gateway(Node):
         self.initial_pub=self.create_publisher(PoseWithCovarianceStamped,"/initialpose",10)
         self.nav=ActionClient(self,NavigateToPose,"/navigate_to_pose")
         self.cancel_client=self.create_client(CancelGoal,"/navigate_to_pose/_action/cancel_goal")
-        self.exp_clients={n:self.create_client(Trigger,f"/exploration/{n}") for n in ("start","stop","save_map","return_home","depart")}
+        # Volatile context heartbeat: the supervisor must never recover an old,
+        # latched goal after the gateway, Nav2, or navigation session restarts.
+        self.nav_context_pub=self.create_publisher(String,"/mobile/navigation_context",10)
+        self.create_subscription(String,"/mobile/navigation_recovery",self._navigation_recovery,10)
+        self.create_subscription(UInt8,"/chassis/control_source",self._control_source,10)
+        self.create_subscription(UInt8,"/chassis/side_ultrasonic_enabled",self._side_ultrasonic_state,10)
+        self.exp_clients={n:self.create_client(Trigger,f"/exploration/{n}") for n in ("start","stop","save_map","return_home","return_start","depart")}
+        self.voice = None
+        if cfg.get('FOOTBATH_VOICE_ENABLED', '1') == '1':
+            from .voice_control import VoiceControl
+            self.voice = VoiceControl(self, cfg, get_package_share_directory('rk3576_footbath_mobile'))
+        from .obstacle_view import ObstacleView
+        self.obstacle_view=ObstacleView(self)
         self.return_transition=ReturnTransition(self)
         self.create_service(Trigger,"/mobile/restore_saved_return",self.return_transition.restore)
         # 10 Hz state processing and 5 Hz watchdog are ample for a phone UI
@@ -97,6 +116,21 @@ class Gateway(Node):
         threading.Thread(target=self.http.serve_forever,daemon=True).start()
         self.get_logger().info(f"mobile UI listening on {self.bind}:{self.port}")
 
+    def _side_ultrasonic_state(self,msg):
+        if msg.data in (0,1):
+            self.side_ultrasonic_actual=bool(msg.data)
+            self.side_ultrasonic_seen=time.monotonic()
+
+    def _set_side_ultrasonic(self,data):
+        if self.mode != 'idle' or self.transitioning or self._group_exists(self.child_pgid):
+            raise ValueError('请先结束建图/导航，进入空闲模式后切换；暂停不等于结束')
+        enabled=data.get('enabled')
+        if not isinstance(enabled,bool): raise ValueError('enabled 必须为布尔值')
+        if not enabled and data.get('confirm_disabled') is not True:
+            raise ValueError('关闭会失去左右超声波保护，请明确确认')
+        self.side_ultrasonic_enabled=enabled
+        self.side_ultrasonic_actual=None; self.side_ultrasonic_seen=0.0
+
     def _home_status(self,msg):
         try:
             status=json.loads(msg.data)
@@ -106,7 +140,7 @@ class Gateway(Node):
                 return
             self.home_status=status; self.home_seen=time.monotonic()
             if float(status.get("updated_at",0)) >= self.return_requested_at:
-                self.return_requested=status.get("phase") in ("preparing","sending","returning","waiting_health","saving_map","handoff_ready","undocking","docking","dock_waiting","dock_preparing","aligning")
+                self.return_requested=status.get("phase") in ("preparing","sending","returning","waiting_health","saving_map","handoff_ready","undocking","docking","dock_waiting","dock_preparing","aligning","hazard_suspended")
         except (ValueError,TypeError):
             pass
     def _seen(self,key): self.latest[key]=time.monotonic()
@@ -122,6 +156,15 @@ class Gateway(Node):
     def _amcl_pose(self,msg):
         now=time.monotonic(); self.last_amcl_pose_at=now
         if self.mode=="navigation" and self.initial_state=="waiting" and now>=self.initial_request_at:
+            if self.initial_source=='manual':
+                p=msg.pose.pose.position; q=msg.pose.pose.orientation
+                observed=dict(x=p.x,y=p.y,yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z)))
+                stamp_ns=msg.header.stamp.sec*1_000_000_000+msg.header.stamp.nanosec
+                if not matches_manual_initial(self.initial_request,observed,self.initial_request_ros_ns,stamp_ns,msg.header.frame_id):
+                    return
+                # Do not overwrite the map's saved dock or use a later drifting
+                # AMCL estimate as the user's explicitly selected destination.
+                self.confirmed_initial_pose=dict(self.initial_request)
             self.initialized=True; self.initial_state="confirmed"
             self.nav_state="localized"; self.nav_message="AMCL已确认初始位姿"
 
@@ -181,10 +224,64 @@ class Gateway(Node):
             self.manual_pub.publish(Twist()); self.destroy_publisher(self.manual_pub); self.manual_pub=None
         self.manual_active=False
     def _cancel_nav(self):
+        self._invalidate_navigation('用户取消导航')
         self.pending_departure_goal=None
         self._service('stop')
         if self.cancel_client.service_is_ready(): self.cancel_client.call_async(CancelGoal.Request())
         self.nav_state="cancel_requested"; self.nav_message="已请求取消导航"
+    def _publish_navigation_context(self):
+        msg=String(); msg.data=json.dumps(self.nav_owner.context(),ensure_ascii=False)
+        self.nav_context_pub.publish(msg)
+    def _cancel_owned_handle(self):
+        handle=self.goal_handle; self.goal_handle=None
+        if handle is not None:
+            try: handle.cancel_goal_async()
+            except Exception as error:
+                self.get_logger().warning('取消本次导航目标失败: '+str(error))
+    def _invalidate_navigation(self,message,phase='canceled'):
+        self.nav_owner.invalidate(message,phase)
+        self._cancel_owned_handle()
+        self._publish_navigation_context()
+    def _control_source(self,msg):
+        self.control_source=int(msg.data); self.control_source_at=time.monotonic()
+        if self.control_source>=2 and (self.nav_owner.phase in NavigationOwner.BUSY or self.pending_departure_goal is not None):
+            self.pending_departure_goal=None
+            self._invalidate_navigation('手柄或调试控制已接管，原导航不会自动恢复')
+            # Revoke the supervisor lease even if an action cancel is late or
+            # fails. F407's independent manual priority is not changed.
+            self._service('stop')
+            self.nav_state='canceled'; self.nav_message='手柄或调试控制已接管，请重新发送导航目标'
+    def _navigation_recovery(self,msg):
+        try: command=json.loads(msg.data)
+        except (ValueError,TypeError): return
+        owner=self.nav_owner
+        if not owner.matches(command): return
+        action=command.get('action')
+        if action=='suspend':
+            if self.mode!='navigation' or self.return_requested or not owner.suspend(command): return
+            # ACK freezes the old attempt; the supervisor separately waits for
+            # Nav2's terminal action status before enabling any reverse motion.
+            self._cancel_owned_handle()
+            self.nav_state='hazard_recovery'; self.nav_message='检测到台阶或近障，已保留目标，等待安全脱险'
+            self._publish_navigation_context()
+        elif action=='resume':
+            if owner.phase!='suspended' or owner.recovery_id!=command['recovery_id']: return
+            ready=(self.mode=='navigation' and self.initialized and not self.return_requested and not self.manual_active
+                   and self.child is not None and self.child.poll() is None
+                   and self.pose_map is not None
+                   and all(self.healthy(k) for k in ('scan','odom','map'))
+                   and self.control_source is not None and self.control_source<2
+                   and time.monotonic()-self.control_source_at<=.8)
+            if not ready:
+                self._invalidate_navigation('脱险后导航条件不满足，保持停车','failed')
+                self.nav_state='failed'; self.nav_message='脱险后定位、传感器或控制来源未就绪，请人工检查'
+                return
+            attempt=owner.resume(command)
+            if attempt is not None:
+                self._send_owned_goal(dict(owner.goal),attempt)
+        elif action=='abort' and owner.phase in NavigationOwner.BUSY and owner.recovery_id in ('',command['recovery_id']):
+            self._invalidate_navigation(str(command.get('message','台阶恢复失败，保持停车')),'failed')
+            self.nav_state='failed'; self.nav_message=self.nav_owner.message
     def _service(self,name):
         client=self.exp_clients[name]
         if client.service_is_ready(): client.call_async(Trigger.Request()); return True
@@ -224,6 +321,7 @@ class Gateway(Node):
         self._tick_departure()
         self._try_saved_initial()
         self._watchdog_health(now)
+        self._publish_navigation_context()
 
     def _try_saved_initial(self):
         if (self.mode=='navigation' and self.saved_map_home is not None
@@ -257,10 +355,12 @@ class Gateway(Node):
             self.initialized=False; self.initial_state="failed"
             self.nav_state="localization_failed"; self.nav_message="AMCL在8秒内未确认初始位姿，请重新设置"
         if self.child and self.child.poll() is not None:
+            self._invalidate_navigation('导航进程已退出','failed')
             failed_mode=self.mode; returncode=self.child.returncode
             self.get_logger().error(f"{failed_mode} launch exited: {returncode}; cleaning process group {self.child_pgid}")
             self._stop_child_group()
             self.child=None; self.child_pgid=None; self.mode="idle"; self.mapping_scan_source=""; self.transitioning=False
+            self.confirmed_initial_pose=None
             self.launch_error=f"{failed_mode} launch exited: {returncode}"
             self._release_manual()
         if self.transitioning and self.child and self.child.poll() is None:
@@ -278,6 +378,7 @@ class Gateway(Node):
                 f"mobile heartbeat lost; {detail}; autonomous task remains under local supervision")
         if self.manual_active and time.monotonic()-self.last_heartbeat>0.30: self._release_manual()
     def _stop_child(self):
+        self._invalidate_navigation('导航会话已结束')
         self.return_transition.cancel()
         self._release_manual()
         if self.mode=="auto_mapping": self._service("stop")
@@ -288,16 +389,18 @@ class Gateway(Node):
             except subprocess.TimeoutExpired: pass
         self.child=None; self.child_pgid=None; self.mode="idle"; self.initialized=False; self.pose_map=None
         self.initial_state="not_set"; self.initial_request=None; self.initial_request_at=0.0
+        self.initial_request_ros_ns=0; self.confirmed_initial_pose=None
         self.nav_state="idle"; self.nav_message=""; self.nav_feedback=None; self.goal_pose=None
         self.mapping_scan_source=""
         self.home_status={}; self.home_seen=0.0; self.return_requested=False
         self.saved_map_home=None
         self.initial_source='none'
-    def _launch(self,mode,map_path="",mapping_scan_source=None,return_home=None,depart_from_dock=True):
+    def _launch(self,mode,map_path="",mapping_scan_source=None,return_home=None,depart_from_dock=True,return_dock=True):
         if not isinstance(depart_from_dock,bool): raise ValueError('invalid departure selection')
         if mode not in ALLOWED_MODES: raise ValueError("invalid mode")
         launch=["ros2","launch","rk3576_footbath_bringup"]
         requested_map=""
+        requested_home=None
         requested_source=""
         if mode in ("mapping","auto_mapping"):
             requested_source=normalize_mapping_scan_source(mapping_scan_source,self.mapping_scan_default)
@@ -311,8 +414,12 @@ class Gateway(Node):
             candidate=self.map_store.checked_yaml(map_path)
             requested_map=str(candidate); launch+=["navigation.launch.py","headless:=true",f"map:={candidate}"]
             launch += ['depart_from_dock:='+str(depart_from_dock).lower()]
+            # Pass the validated map's dock to the supervisor independently of
+            # AMCL's initialization seed. A later manual seed is not a new dock.
+            requested_home=self.map_store.home(candidate) if return_home is None else dict(return_home)
+            launch += ['home_pose_json:='+json.dumps(requested_home or {})]
             if return_home is not None:
-                launch += ['return_session:=true', 'home_pose_json:='+json.dumps(return_home)]
+                launch += ['return_session:=true', 'return_dock:='+str(return_dock).lower()]
         same_selection=(mode=="navigation" and requested_map==self.map_name) or (mode in ("mapping","auto_mapping") and requested_source==self.mapping_scan_source) or mode=="idle"
         if mode=='navigation':
             same_selection=same_selection and depart_from_dock==self.depart_from_dock
@@ -328,11 +435,13 @@ class Gateway(Node):
         self.latest={"scan_high":None,"scan_fused":None,"odom":None,"map":None}; self.grid=None; self.grid_png=None; self.pose_map=None
         if mode=="idle": self.transitioning=False; return
         env=os.environ.copy()
+        env['FOOTBATH_SIDE_ULTRASONIC_ENABLED']='1' if self.side_ultrasonic_enabled else '0'
+        self.side_ultrasonic_actual=None; self.side_ultrasonic_seen=0.0
         self.child=subprocess.Popen(launch,cwd=self.ws,env=env,start_new_session=True)
         self.child_pgid=os.getpgid(self.child.pid)
         self.mode=mode; self.map_name=requested_map; self.mapping_scan_source=requested_source; self.nav_state="idle"; self.nav_message=""
         self.depart_from_dock=depart_from_dock
-        self.saved_map_home=self.map_store.home(requested_map) if mode=='navigation' and return_home is None else None
+        self.saved_map_home=requested_home if mode=='navigation' and return_home is None else None
         self.nav_feedback=None; self.goal_pose=None; self.initialized=False
         self.initial_state="not_set"; self.initial_request=None; self.initial_request_at=0.0
         self.mode_started_at=time.monotonic(); self.transitioning=True
@@ -349,7 +458,7 @@ class Gateway(Node):
         linear,angular=clamp_command(float(d.get("linear",0)),float(d.get("angular",0)))
         active=bool(d.get("active",False))
         if not active: self._release_manual(); return
-        if self.return_requested or self.home_status.get("phase") in ("preparing","sending","returning","waiting_health","saving_map","handoff_ready","undocking","docking","dock_waiting","dock_preparing","aligning"):
+        if self.return_requested or self.home_status.get("phase") in ("preparing","sending","returning","waiting_health","saving_map","handoff_ready","undocking","docking","dock_waiting","dock_preparing","aligning","hazard_suspended"):
             raise ValueError("正在返航，请先取消返航再手动控制")
         if time.monotonic()-self.home_seen>3.0 or not self.home_status.get("available"):
             raise ValueError("请保持静止，等待本次建图起点记录完成")
@@ -359,7 +468,7 @@ class Gateway(Node):
         msg=Twist(); msg.linear.x=linear; msg.angular.z=angular; self.manual_pub.publish(msg)
         self.manual_active=True; self.last_heartbeat=time.monotonic()
     def _initial(self,d,*,handoff=False,source='manual'):
-        if self.pending_departure_goal is not None or (self.return_requested and not handoff) or self.nav_state in ('sending','active'):
+        if self.pending_departure_goal is not None or (self.return_requested and not handoff) or self.nav_state in ('sending','active','hazard_recovery','resuming'):
             raise ValueError('请先取消当前任务并停车，再重新初始化位姿')
         if self.mode!="navigation": raise ValueError("initial pose requires navigation mode")
         if self.count_subscribers("/initialpose")==0:
@@ -373,15 +482,25 @@ class Gateway(Node):
         msg.pose.pose.position.x=x; msg.pose.pose.position.y=y
         msg.pose.pose.orientation.z=math.sin(yaw/2); msg.pose.pose.orientation.w=math.cos(yaw/2)
         msg.pose.covariance[0]=0.25; msg.pose.covariance[7]=0.25; msg.pose.covariance[35]=0.0685
+        request_ros_ns=self.get_clock().now().nanoseconds
+        self.initial_pub.publish(msg)
         self.initialized=False; self.initial_state="waiting"
         self.initial_source='handoff' if handoff else source
         self.initial_request={"x":x,"y":y,"yaw":yaw}; self.initial_request_at=time.monotonic()
+        self.initial_request_ros_ns=request_ros_ns
         self.nav_state="localizing"; self.nav_message="初始位姿已发送，等待AMCL确认"
         self.nav_feedback=None; self.goal_pose=None
-        self.initial_pub.publish(msg)
+    def _return_initial_pose(self):
+        if self.mode!='navigation' or self.confirmed_initial_pose is None:
+            raise ValueError('本导航会话尚无手动设置并确认的初始位姿；地图自动初始化不等于本次初始化位置')
+        # The existing goal path owns authorization, departure checks, action
+        # cancellation and cliff recovery. Never call the dock-return service.
+        self._goal(dict(self.confirmed_initial_pose))
     def _goal(self,d):
-        if self.return_requested or self.home_status.get('phase') in ('undocking','docking','dock_waiting','dock_preparing','aligning'):
+        if self.return_requested or self.home_status.get('phase') in ('undocking','docking','dock_waiting','dock_preparing','aligning','hazard_suspended'):
             raise ValueError('正在执行基站/返航任务，请先取消再发送其它目标')
+        if self.nav_owner.phase in ('suspended','resuming'):
+            raise ValueError('正在进行台阶/近障恢复，请先取消任务再选择其它目标')
         if self.mode!="navigation" or not self.initialized:
             raise ValueError("navigation is not localized; wait for AMCL confirmation")
         if not all(self.healthy(k) for k in ("scan","odom","map")): raise ValueError("scan/map/odom is stale")
@@ -394,6 +513,7 @@ class Gateway(Node):
         if not self.nav.server_is_ready(): raise ValueError("NavigateToPose is unavailable")
         if time.monotonic()-self.home_seen>2:
             raise ValueError('出站监督器未就绪，禁止规划导航')
+        if getattr(self, 'voice', None): self.voice.before_goal()
         if self.home_status.get('phase') != 'navigation_ready':
             client=self.exp_clients['depart']
             if not client.service_is_ready():
@@ -403,13 +523,25 @@ class Gateway(Node):
             self.departure_future=client.call_async(Trigger.Request())
             self.nav_state='departing'; self.nav_message='目标已暂存；先直行50cm出站，完成后才开始规划'
             return
+        self._cancel_owned_handle()
+        target=dict(x=x,y=y,yaw=yaw)
+        self._send_owned_goal(target,self.nav_owner.begin(target))
+
+    def _send_owned_goal(self,target,attempt):
+        x,y,yaw=target['x'],target['y'],target['yaw']
+        token,generation=attempt
         goal=NavigateToPose.Goal(); goal.pose=PoseStamped(); goal.pose.header.frame_id="map"; goal.pose.header.stamp=self.get_clock().now().to_msg()
         goal.pose.pose.position.x=x; goal.pose.pose.position.y=y
         goal.pose.pose.orientation.z=math.sin(yaw/2); goal.pose.pose.orientation.w=math.cos(yaw/2)
         self.goal_pose={"x":x,"y":y,"yaw":yaw}; self.nav_feedback=None
-        self.nav_state="sending"; self.nav_message="目标已发送，等待Nav2接受"
-        future=self.nav.send_goal_async(goal,feedback_callback=self._goal_feedback)
-        future.add_done_callback(self._goal_response)
+        self.nav_state=self.nav_owner.phase; self.nav_message="目标已发送，等待Nav2接受"
+        self._publish_navigation_context()
+        try:
+            future=self.nav.send_goal_async(goal,feedback_callback=lambda msg:self._goal_feedback(msg,token,generation))
+            future.add_done_callback(lambda completed:self._goal_response(completed,token,generation))
+        except Exception as error:
+            self._invalidate_navigation('发送导航目标失败: '+str(error),'failed')
+            self.nav_state='error'; self.nav_message=self.nav_owner.message
 
     def _tick_departure(self):
         if self.pending_departure_goal is None:
@@ -434,15 +566,27 @@ class Gateway(Node):
             self.pending_departure_goal=None
             self._cancel_nav()
             self.nav_state='departure_failed'; self.nav_message=str(error)+'；已停车，未发送导航目标'
-    def _goal_response(self,future):
+    def _goal_response(self,future,token,generation):
         try: handle=future.result()
         except Exception as error:
-            self.nav_state="error"; self.nav_message=f"目标发送失败: {error}"; return
+            if self.nav_owner.current(token,generation):
+                self.nav_state="error"; self.nav_message=f"目标发送失败: {error}"
+                self.nav_owner.finish('failed',self.nav_message); self._publish_navigation_context()
+            return
+        if not self.nav_owner.current(token,generation) or self.nav_owner.phase not in ('sending','resuming'):
+            if handle.accepted:
+                try: handle.cancel_goal_async()
+                except Exception as error: self.get_logger().warning('迟到目标取消失败: '+str(error))
+            return
         if not handle.accepted:
-            self.nav_state="rejected"; self.nav_message="Nav2拒绝目标点"; return
+            self.nav_state="rejected"; self.nav_message="Nav2拒绝目标点"
+            self.nav_owner.finish('failed',self.nav_message); self._publish_navigation_context(); return
+        if getattr(self, 'voice', None): self.voice.goal_accepted()
         self.goal_handle=handle; self.nav_state="active"; self.nav_message="Nav2已接受目标，正在导航"
-        result=handle.get_result_async(); result.add_done_callback(self._goal_result)
-    def _goal_feedback(self,message):
+        self.nav_owner.finish('active'); self._publish_navigation_context()
+        result=handle.get_result_async(); result.add_done_callback(lambda completed:self._goal_result(completed,token,generation))
+    def _goal_feedback(self,message,token,generation):
+        if not self.nav_owner.current(token,generation) or self.nav_owner.phase!='active': return
         feedback=message.feedback
         eta=feedback.estimated_time_remaining
         self.nav_feedback={
@@ -452,16 +596,27 @@ class Gateway(Node):
         }
         if self.nav_state not in ("cancel_requested","canceled"):
             self.nav_state="active"; self.nav_message="正在导航"
-    def _goal_result(self,future):
-        try: status=future.result().status
+    def _goal_result(self,future,token,generation):
+        if not self.nav_owner.current(token,generation) or self.nav_owner.phase!='active': return
+        try:
+            result_message = future.result()
+            status = result_message.status
         except Exception as error:
-            self.nav_state="error"; self.nav_message=f"读取导航结果失败: {error}"; return
+            self.nav_state="error"; self.nav_message=f"读取导航结果失败: {error}"
+            self.nav_owner.finish('failed',self.nav_message); self._publish_navigation_context(); return
         states={
             GoalStatus.STATUS_SUCCEEDED:("succeeded","已到达目标点"),
             GoalStatus.STATUS_CANCELED:("canceled","导航已取消"),
             GoalStatus.STATUS_ABORTED:("aborted","导航失败，Nav2已中止"),
         }
         self.nav_state,self.nav_message=states.get(status,(f"result_{status}",f"导航结束，状态码 {status}"))
+        if status==GoalStatus.STATUS_ABORTED:
+            detail = str(getattr(getattr(result_message, 'result', None), 'error_msg', ''))
+            if any(text in detail.lower() for text in ('no valid path', 'no path found', 'failed to create a plan')):
+                self.nav_state='no_path'; self.nav_message=detail
+        self.goal_handle=None
+        self.nav_owner.finish('succeeded' if status==GoalStatus.STATUS_SUCCEEDED else ('canceled' if status==GoalStatus.STATUS_CANCELED else 'failed'),self.nav_message)
+        self._publish_navigation_context()
     def _process(self):
         for _ in range(20):
             deferred=False
@@ -470,10 +625,23 @@ class Gateway(Node):
             if box.get("cancelled") or time.monotonic()>deadline:
                 box["error"]="command expired"; event.set(); continue
             try:
-                if name=="mode": self._launch(data["mode"],data.get("map",""),data.get("mapping_scan_source"),depart_from_dock=data.get('depart_from_dock',True))
+                if getattr(self, 'voice', None) and name in ('mode','goal','initial','cancel','emergency_stop','stop','return_home','return_initial_pose','teleop'):
+                    self.voice.cancel()
+                if self.obstacle_view.pending and name in ('mode','goal','initial','teleop','start','return_home','return_initial_pose'):
+                    raise ValueError('障碍编辑尚未确认，请保持暂停')
+                if name=="obstacle_edit":
+                    self.obstacle_view.submit(data,event,box)
+                    deferred=True
+                elif name=="mode": self._launch(data["mode"],data.get("map",""),data.get("mapping_scan_source"),depart_from_dock=data.get('depart_from_dock',True))
+                elif name=="side_ultrasonic":
+                    self._set_side_ultrasonic(data)
+                    box['result']={'ok':True,'message':'已选择；下次启动任务时等待 F407 确认。重启网页服务恢复默认开启。'}
                 elif name=="teleop": self._teleop(data)
                 elif name=="initial": self._initial(data)
                 elif name=="goal": self._goal(data)
+                elif name=="return_initial_pose":
+                    self._return_initial_pose()
+                    box["result"]={"ok":True,"message":"已请求普通导航回本次初始化位置；不执行基站对齐倒车"}
                 elif name=="cancel":
                     self.return_transition.cancel(); self._service('stop'); self._cancel_nav()
                 elif name=="emergency_stop": self._stop_child()
@@ -503,9 +671,11 @@ class Gateway(Node):
                     if name=='stop':
                         self.return_transition.cancel()
                         self.pending_departure_goal=None
+                        self._invalidate_navigation('用户暂停当前任务')
                     if name=="return_home":
                         if time.monotonic()-self.home_seen>3.0 or not self.home_status.get("available"):
                             raise ValueError("当前会话没有有效起点或返航状态已失联")
+                        self._invalidate_navigation('已切换为返航任务')
                         self.return_requested=True; self.return_requested_at=time.monotonic()
                     client=self.exp_clients[name]
                     if not client.service_is_ready():
@@ -521,7 +691,8 @@ class Gateway(Node):
             finally:
                 if not deferred: event.set()
     def execute(self,name,data):
-        if name=="teleop": timeout=0.5
+        if name=="obstacle_edit": timeout=6.0
+        elif name=="teleop": timeout=0.5
         elif name in ("mode","stop","cancel","emergency_stop"): timeout=20.0
         else: timeout=4.0
         event=threading.Event(); box={"cancelled":False}; deadline=time.monotonic()+timeout
@@ -536,9 +707,14 @@ class Gateway(Node):
         health_keys={"scan":self._scan_key(),"odom":"odom","map":"map"}
         ages={k:(None if self.latest.get(actual) is None else round(now-self.latest[actual],3)) for k,actual in health_keys.items()}
         return {"mode":self.mode,"map_name":self.map_name,"nav_state":self.nav_state,
+         "voice":self.voice.status_view() if getattr(self,"voice",None) else {"enabled":False},
+         "obstacle_view":self.obstacle_view.view(),
+         "side_ultrasonic_enabled":self.side_ultrasonic_enabled,
+         "side_ultrasonic_actual":self.side_ultrasonic_actual if self.mode!='idle' and now-self.side_ultrasonic_seen<=0.6 else None,
          "nav_message":self.nav_message,"nav_feedback":self.nav_feedback,"goal":self.goal_pose,
          "initialized":self.initialized,"initial_state":self.initial_state,
          "initial_request":self.initial_request,"saved_map_home":self.saved_map_home,"initial_source":self.initial_source,
+         "confirmed_initial_pose":self.confirmed_initial_pose,
          "mapping_scan_source":self.mapping_scan_source or self.mapping_scan_default,
          "mapping_scan_default":self.mapping_scan_default,
          "transitioning":self.transitioning,"launch_error":self.launch_error,
@@ -550,7 +726,8 @@ class Gateway(Node):
          "home_status_fresh":time.monotonic()-self.home_seen<=3.0,
          "map_entries":self.map_store.entries(self.map_name if self.mode=="navigation" else ""),"save_state":self.save_state,"pose":self.pose_map,
          "map":None if self.grid is None else {"width":self.grid.info.width,"height":self.grid.info.height,
-          "resolution":self.grid.info.resolution,"origin_x":self.grid.info.origin.position.x,"origin_y":self.grid.info.origin.position.y}}
+          "resolution":self.grid.info.resolution,"origin_x":self.grid.info.origin.position.x,"origin_y":self.grid.info.origin.position.y,
+          "origin_yaw":math.atan2(2*(self.grid.info.origin.orientation.w*self.grid.info.origin.orientation.z+self.grid.info.origin.orientation.x*self.grid.info.origin.orientation.y),1-2*(self.grid.info.origin.orientation.y**2+self.grid.info.origin.orientation.z**2))}}
     def _handler(self):
         gateway=self
         class Handler(BaseHTTPRequestHandler):
@@ -609,12 +786,16 @@ class Gateway(Node):
                 if path=="/api/heartbeat": return self.reply(200,{"ok":True})
                 routes={"/api/mode":"mode","/api/teleop":"teleop","/api/initial_pose":"initial","/api/goal":"goal","/api/cancel":"cancel","/api/emergency_stop":"emergency_stop","/api/save_manual":"save_manual","/api/exploration/start":"start","/api/exploration/stop":"stop","/api/exploration/save":"save_map","/api/maps/rename":"map_rename","/api/maps/delete":"map_delete"}
                 name=routes.get(path)
+                if path=="/api/obstacles/edit": name="obstacle_edit"
                 if path=="/api/return_home": name="return_home"
+                if path=="/api/return_initial_pose": name="return_initial_pose"
+                if path=="/api/side_ultrasonic": name="side_ultrasonic"
                 if not name: return self.reply(404,{"error":"not found"})
                 try: return self.reply(200,gateway.execute(name,data))
                 except Exception as e: return self.reply(409,{"error":str(e)})
         return Handler
     def stop(self):
+        if self.voice: self.voice.io.close()
         self.render_stop.set(); self.http.shutdown(); self._stop_child()
 
 def main(args=None):

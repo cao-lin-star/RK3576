@@ -61,8 +61,8 @@ controller_server:
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 1.0
     progress_checker_plugin: progress_checker
-    goal_checker_plugins: [general_goal_checker]
-    controller_plugins: [FollowPath]
+    goal_checker_plugins: [general_goal_checker, exploration_goal_checker]
+    controller_plugins: [FollowPath, ExplorePath]
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker
       # Low-speed 0.20 m/s chassis: allow wheel ramp, obstacle pauses and recovery.
@@ -73,6 +73,11 @@ controller_server:
       stateful: true
       xy_goal_tolerance: 0.15
       yaw_goal_tolerance: 0.20
+    exploration_goal_checker:
+      plugin: nav2_controller::SimpleGoalChecker
+      stateful: true
+      xy_goal_tolerance: 0.15
+      yaw_goal_tolerance: 3.142
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: false
@@ -85,12 +90,13 @@ controller_server:
       min_speed_xy: 0.0
       max_speed_xy: 0.20
       min_speed_theta: 0.0
-      acc_lim_x: 2.5
+      # Wheel acceleration <= 0.20 + 0.5 * 0.330 / 2 = 0.2825 < MCU 0.30.
+      acc_lim_x: 0.20
       acc_lim_y: 0.0
-      acc_lim_theta: 3.2
-      decel_lim_x: -2.5
+      acc_lim_theta: 0.5
+      decel_lim_x: -0.20
       decel_lim_y: 0.0
-      decel_lim_theta: -3.2
+      decel_lim_theta: -0.5
       vx_samples: 12
       vy_samples: 1
       vtheta_samples: 16
@@ -104,6 +110,59 @@ controller_server:
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics: [RotateToGoal, Oscillation, BaseObstacle, GoalAlign, PathAlign, PathDist, GoalDist]
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.10
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.10
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+    # Exploration arrival is position-only; normal navigation retains its yaw.
+    ExplorePath:
+      plugin: footbath::ExploreController
+      primary_controller: dwb_core::DWBLocalPlanner
+      angular_dist_threshold: 0.60
+      angular_disengage_threshold: 0.15
+      forward_sampling_distance: 0.35
+      rotate_to_heading_angular_vel: 0.35
+      max_angular_accel: 0.50
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: false
+      closed_loop: true
+      debug_trajectory_details: false
+      min_vel_x: 0.0
+      min_vel_y: 0.0
+      # RK自动建图和导航统一限制；实车仍从更低速度逐级验证。
+      max_vel_x: 0.20
+      max_vel_y: 0.0
+      max_vel_theta: 0.80
+      min_speed_xy: 0.0
+      max_speed_xy: 0.20
+      min_speed_theta: 0.0
+      # Wheel acceleration <= 0.20 + 0.5 * 0.330 / 2 = 0.2825 < MCU 0.30.
+      acc_lim_x: 0.20
+      acc_lim_y: 0.0
+      acc_lim_theta: 0.5
+      decel_lim_x: -0.20
+      decel_lim_y: 0.0
+      decel_lim_theta: -0.5
+      vx_samples: 12
+      vy_samples: 1
+      vtheta_samples: 16
+      sim_time: 1.5
+      linear_granularity: 0.07
+      angular_granularity: 0.05
+      # Tolerate short map->odom scheduling jitter on RK3576.
+      transform_tolerance: 0.5
+      xy_goal_tolerance: 0.15
+      trans_stopped_velocity: 0.05
+      short_circuit_trajectory_evaluation: true
+      stateful: true
+      critics: [Oscillation, BaseObstacle, PathAlign, PathDist, GoalDist]
       BaseObstacle.scale: 0.02
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.10
@@ -130,7 +189,7 @@ local_costmap:
       # 实测最大外廓半径0.22 m，另加0.02 m规划余量。
       robot_radius: 0.22
       footprint_padding: 0.02
-      plugins: [obstacle_layer, ultrasonic_range_layer, hazard_layer, inflation_layer]
+      plugins: [obstacle_layer, hazard_layer, inflation_layer]
       hazard_layer:
         plugin: rk3576_footbath_costmap::HazardLayer
       obstacle_layer:
@@ -161,7 +220,7 @@ local_costmap:
           inf_is_valid: true
       ultrasonic_range_layer:
         plugin: rk3576_footbath_costmap::RecoveringRangeLayer
-        enabled: true
+        enabled: false
         topics: ["/range/ultrasonic"]
         input_sensor_type: VARIABLE
         phi: 1.2
@@ -221,20 +280,6 @@ global_costmap:
           obstacle_max_range: 4.5
           obstacle_min_range: 0.10
           inf_is_valid: true
-      # A lidar/ultrasonic disagreement is treated as a temporary glass wall
-      # for global planning. The monitor publishes max_range to clear this
-      # independent layer after its five-second hold expires.
-      glass_range_layer:
-        plugin: nav2_costmap_2d::RangeSensorLayer
-        enabled: true
-        topics: ["/range/suspected_glass"]
-        input_sensor_type: VARIABLE
-        phi: 0.70
-        inflate_cone: 1.0
-        no_readings_timeout: 1.0
-        clear_threshold: 0.20
-        mark_threshold: 0.80
-        clear_on_max_reading: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
@@ -296,7 +341,7 @@ behavior_server:
     simulate_ahead_time: 2.0
     max_rotational_vel: 0.80
     min_rotational_vel: 0.20
-    rotational_acc_lim: 3.2
+    rotational_acc_lim: 0.5
 
 waypoint_follower:
   ros__parameters:
@@ -317,8 +362,8 @@ velocity_smoother:
     feedback: OPEN_LOOP
     max_velocity: [0.20, 0.0, 0.80]
     min_velocity: [-0.20, 0.0, -0.80]
-    max_accel: [2.5, 0.0, 3.2]
-    max_decel: [-2.5, 0.0, -3.2]
+    max_accel: [0.20, 0.0, 0.5]
+    max_decel: [-0.20, 0.0, -0.5]
     odom_topic: /odom
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

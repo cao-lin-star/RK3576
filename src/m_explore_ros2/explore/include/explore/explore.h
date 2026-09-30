@@ -1,3 +1,4 @@
+#include "explore/tracking_guard.h"
 /*********************************************************************
  *
  * Software License Agreement (BSD License)
@@ -41,6 +42,7 @@
 #include <explore/costmap_client.h>
 #include <explore/frontier_search.h>
 #include <explore/progress_guard.h>
+#include <explore/planning_guard.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <tf2_ros/transform_listener.hpp>
@@ -51,6 +53,8 @@
 #include <geometry_msgs/msg/point.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
 #include <string>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -91,6 +95,46 @@ private:
    * @brief  Make a global plan
    */
   void makePlan();
+  void monitorTracking();
+  bool readStartSpace(const geometry_msgs::msg::Pose& pose);
+  void sendFrontier(const geometry_msgs::msg::Point& target_position,
+                    const geometry_msgs::msg::Pose& pose);
+  TrackingGuard tracking_guard_;
+  RouteRetryGuard route_retry_guard_;
+  DepartureFailureGuard departure_failures_;
+  bool goal_alignment_failed_{false};
+  bool alignment_recovery_required_{false};
+  bool retain_recovery_target_{false};
+  bool departure_clear_{false};
+  double departure_checked_at_{-1.};
+  void requestDepartureEscape(const char* reason);
+  bool execution_failure_pending_{false};
+  double execution_retry_at_{0.};
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr start_space_pub_;
+  void publishView();
+  void suppressGoal(double now, double x, double y);
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr view_pub_;
+  rclcpp::TimerBase::SharedPtr view_timer_;
+  struct FailedView { double x,y,until; };
+  std::vector<FailedView> failed_view_;
+  double goal_sent_at_{0.};
+  bool goal_had_path_{false};
+  bool goal_started_following_{false};
+  double following_started_at_{0.};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr controller_phase_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_subscription_;
+  geometry_msgs::msg::Point goal_start_;
+  CompletionGuard completion_;
+  bool reachable_space_{false};
+  bool filtered_unreachable_{false};
+  bool require_health_lease_{false};
+  bool health_lease_{false};
+  double health_lease_at_{-1.};
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr health_lease_sub_;
+  void confirmCompletion(const CompletionGuard::Regions& regions);
+  double retry_wait_at_{-1.};
+  void completeReachable();
+
 
   // /**
   //  * @brief  Publish a frontiers as markers
@@ -129,13 +173,24 @@ private:
   // rclcpp::TimerBase::SharedPtr oneshot_;
 
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr resume_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr suppress_subscription_;
   void resumeCallback(const std_msgs::msg::Bool::SharedPtr msg);
 
   std::vector<geometry_msgs::msg::Point> frontier_blacklist_;
   ProgressGuard progress_guard_;
+  PlanningFailureGuard planning_failures_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr planner_grid_;
+  double planner_grid_at_{-1.};
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr planner_grid_sub_;
+  rclcpp::Subscription<map_msgs::msg::OccupancyGridUpdate>::SharedPtr planner_updates_sub_;
+  bool planningFailure(const geometry_msgs::msg::Pose& pose,const char* reason);
+  bool filterApproaches(std::vector<frontier_exploration::Frontier>& frontiers,
+                        const geometry_msgs::msg::Pose& pose);
   bool recovery_cancel_pending_{false};
   double recovery_cancel_at_{0};
   unsigned recovery_attempts_{0};
+  double nav_recovery_until_{0.};
+  int nav_recovery_count_{0};
   std::vector<geometry_msgs::msg::Pose> hazard_zones_;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr hazard_subscription_;
   geometry_msgs::msg::Point prev_goal_;

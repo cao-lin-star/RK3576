@@ -70,7 +70,7 @@ Costmap2DClient::Costmap2DClient(rclcpp::Node& node, const tf2_ros::Buffer* tf)
 
   /* initialize costmap */
   costmap_sub_ = node_.create_subscription<nav_msgs::msg::OccupancyGrid>(
-      costmap_topic, 1000,
+      costmap_topic, rclcpp::QoS(1),
       [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
         costmap_received_ = true;
         updateFullMap(msg);
@@ -143,6 +143,9 @@ Costmap2DClient::Costmap2DClient(rclcpp::Node& node, const tf2_ros::Buffer* tf)
 void Costmap2DClient::updateFullMap(
     const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
 {
+  if (msg->info.width==0 || msg->info.height==0 || !std::isfinite(msg->info.resolution) ||
+      msg->info.resolution<=0 || msg->data.size()!=size_t(msg->info.width)*msg->info.height) return;
+  map_at_=node_.now().seconds();
   global_frame_ = msg->header.frame_id;
 
   unsigned int size_in_cells_x = msg->info.width;
@@ -219,8 +222,9 @@ void Costmap2DClient::updatePartialMap(
   }
 }
 
-geometry_msgs::msg::Pose Costmap2DClient::getRobotPose() const
+geometry_msgs::msg::Pose Costmap2DClient::getRobotPose(bool* valid) const
 {
+  if (valid) *valid=false;
   geometry_msgs::msg::PoseStamped robot_pose;
   geometry_msgs::msg::Pose empty_pose;
   robot_pose.header.frame_id = robot_base_frame_;
@@ -254,6 +258,7 @@ geometry_msgs::msg::Pose Costmap2DClient::getRobotPose() const
     return empty_pose;
   }
 
+  if (valid) *valid=true;
   return robot_pose.pose;
 }
 

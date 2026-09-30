@@ -22,20 +22,3 @@ footbath_command_mux:
     auto_max_linear_mps: 0.20
     auto_max_angular_rps: 0.80
     publish_period_s: 0.05
-
-glass_suspect_monitor:
-  ros__parameters:
-    topics:
-      high_scan: /scan_high
-      low_scan: /scan_low_front
-      ultrasonic: /range/ultrasonic
-      output: /safety/suspected_glass
-      valid: /safety/suspected_glass_valid
-      virtual_obstacle: /range/suspected_glass
-    front_half_angle_rad: 0.261799388
-    ultrasonic_trigger_max_m: 1.80
-    lidar_correspondence_margin_m: 0.15
-    sensor_freshness_timeout_s: 0.50
-    assert_consecutive_samples: 3
-    clear_consecutive_samples: 3
-    virtual_obstacle_hold_s: 5.0

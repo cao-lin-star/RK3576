@@ -27,9 +27,28 @@ def home_pose_allowed(first, current, stationary_seconds):
         and stationary_seconds >= 1.0)
 
 
+def restored_home_pose(payload, required):
+    """Restore explicit dock metadata; an AMCL seed must never invent a dock."""
+    data = json.loads(payload or '{}')
+    if data == {} and not required:
+        return None
+    try:
+        x, y, yaw = (float(data[key]) for key in ('x', 'y', 'yaw'))
+        if not all(math.isfinite(value) for value in (x, y, yaw)):
+            raise ValueError('non-finite dock pose')
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError('invalid saved dock pose') from error
+    pose = PoseStamped()
+    pose.header.frame_id = 'map'
+    pose.pose.position.x, pose.pose.position.y = x, y
+    pose.pose.orientation.z, pose.pose.orientation.w = math.sin(yaw/2), math.cos(yaw/2)
+    return pose
+
+
 class HomeReturn:
     BUSY = ('preparing', 'sending', 'returning', 'waiting_health', 'saving_map', 'handoff_ready',
-            'undocking', 'docking', 'dock_waiting', 'dock_preparing', 'aligning')
+            'undocking', 'docking', 'dock_waiting', 'dock_preparing', 'aligning',
+            'hazard_suspended')
 
     def __init__(self, node):
         self.node = node
@@ -39,6 +58,7 @@ class HomeReturn:
         self.departure_required = bool(node.declare_parameter('dock.departure_required', True).value)
         restored = node.declare_parameter('return_home.pose_json', '').value
         self.handoff = None
+        self.return_kind = "dock"
         self.save_started = False
         self.last_motion = time.monotonic()
         self.phase = 'recording'
@@ -48,6 +68,8 @@ class HomeReturn:
         self.stationary_since = None
         self.moved_before_capture = False
         self.generation = 0
+        self._hazard_token = None
+        self._return_target = None
         self.handle = None
         self.cancel_future = None
         self.active_goals = False
@@ -87,19 +109,14 @@ class HomeReturn:
                                  self._action_status, qos)
         node.create_service(Trigger, '/exploration/return_home', self._service)
         node.create_service(Trigger, '/exploration/depart', self._depart)
+        node.create_service(Trigger, '/exploration/return_start', self._return_start)
         self.dock = DockMotion(self)
-        if self.localization and not self.navigation_session:
-            data = json.loads(restored)
-            self.pose = PoseStamped()
-            self.pose.header.frame_id = 'map'
-            self.pose.pose.position.x = float(data['x'])
-            self.pose.pose.position.y = float(data['y'])
-            yaw = float(data['yaw'])
-            if not all(math.isfinite(v) for v in (data['x'], data['y'], yaw)):
-                raise ValueError('invalid restored home')
-            self.pose.pose.orientation.z = math.sin(yaw/2)
-            self.pose.pose.orientation.w = math.cos(yaw/2)
-            self.phase, self.message = 'ready', '已保留建图原起点，等待AMCL定位确认'
+        if self.localization:
+            self.pose = restored_home_pose(restored, required=not self.navigation_session)
+            if self.pose is None:
+                self.phase, self.message = 'unavailable', '当前地图没有有效基站记录；仅允许基站外普通导航'
+            else:
+                self.phase, self.message = 'ready', '已保留地图记录的基站，等待AMCL定位确认'
 
     def _depart(self, request, response):
         response.success = False
@@ -116,17 +133,23 @@ class HomeReturn:
         if not self.departure_required:
             self.dock.exit_complete = True
         if not self.dock.exit_complete:
-            # Capture the confirmed AMCL position, not any pre-initialization TF.
-            self.pose = current
+            if self.pose is None:
+                response.message = ('地图没有有效基站记录，禁止自动50cm出站；'
+                                    '仅当实车已在基站外，结束会话后取消“当前位于基站内”勾选，再加载地图导航')
+                return response
+            # DockMotion checks the fixed dock position and heading before the
+            # existing 50 cm exit. Do not overwrite it with a manual AMCL seed.
             try:
                 self.dock.begin('exit')
             except ValueError as error:
-                response.message = str(error)
+                response.message = (str(error) + '；请核对实车与保存基站的定位。'
+                                    '若实车已在基站外，请结束会话并取消“当前位于基站内”勾选后重新加载地图')
                 return response
         else:
             self.node._begin_exploration()
         response.success = True
-        response.message = '先沿车头方向直行50cm；完成前不会向Nav2发送目标'
+        response.message = ('先沿车头方向直行50cm；完成前不会向Nav2发送目标'
+                            if self.departure_required else '已确认基站外导航，不执行50cm出站')
         return response
 
     def _action_status(self, msg):
@@ -134,10 +157,14 @@ class HomeReturn:
         self.last_status = time.monotonic()
 
     def observe_odom(self, msg):
+        v,w=msg.twist.twist.linear.x,msg.twist.twist.angular.z
+        self.motion_stage=('正在调整行驶朝向' if abs(v)<.01 and abs(w)>.02
+                           else '正在行驶' if abs(v)>=.01 else '已停车，等待规划或任务指令')
+        self.motion_stage_at=time.monotonic()
         self.dock.observe_odom(msg)
         if abs(msg.twist.twist.linear.x) > .01 or abs(msg.twist.twist.angular.z) > .02:
             self.last_motion = time.monotonic()
-        if self.pose is not None:
+        if self.pose is not None or self.localization:
             return
         p = msg.pose.pose.position
         self.current_odom = (p.x, p.y)
@@ -157,6 +184,7 @@ class HomeReturn:
             tf = self.buffer.lookup_transform('map', 'base_footprint', Time())
             stamp = Time.from_msg(tf.header.stamp).nanoseconds
             age = (self.node.get_clock().now().nanoseconds - stamp) / 1e9
+            self.pose_age = age
             if not 0 <= age <= 1.0:
                 self.pose_error = f'map->base_footprint TF age={age:.3f}s (limit 1.0s)'
                 return None
@@ -171,18 +199,67 @@ class HomeReturn:
             self.pose_error = ''
             return p
         except TransformException as error:
+            self.pose_age = None
             self.pose_error = str(error)
             return None
 
     def interrupt(self, reason):
         self.dock.pause()
         self.generation += 1
+        self._hazard_token = None
         if self.handle is not None:
             self.handle.cancel_goal_async()
             self.handle = None
         if self.phase in self.BUSY or self.phase == 'navigation_ready':
             self.phase = 'canceled'
             self.message = reason
+
+    def suspend_for_hazard(self):
+        """Suspend only the Nav2 return leg; dock alignment/reverse never back up."""
+        if (self.phase != 'returning' or self.node._state != 'returning_home'
+                or self.dock.active):
+            return None
+        now = time.monotonic()
+        if now - self.started >= self.timeout:
+            return None
+        self.node._publish_lease(False)
+        self.node._publish_zero()
+        # Invalidate old feedback/results before requesting cancellation. Preserve
+        # the actual staging target, not a newly calculated goal after retreat.
+        self.generation += 1
+        self._hazard_token = self.generation
+        if getattr(self, '_return_target', None) is None:
+            self._return_target = self._navigation_target()
+        self.phase = 'hazard_suspended'
+        self.message = '返航已暂停，等待台阶/近障恢复后重新规划原返航目标'
+        if self.handle is not None:
+            handle, self.handle = self.handle, None
+            try:
+                handle.cancel_goal_async()
+            except Exception as error:
+                self._fail('台阶恢复取消返航目标失败: ' + str(error))
+                self._hazard_token = None
+                return None
+        return self._hazard_token
+
+    def hazard_resume_valid(self, token):
+        """Operator interruption, replacement and the original deadline revoke intent."""
+        return (token is not None and token == getattr(self, '_hazard_token', None)
+                and token == self.generation and self.phase == 'hazard_suspended'
+                and time.monotonic() - self.started < self.timeout)
+
+    def resume_after_hazard(self, token):
+        """Re-enter cancel/settle/health gates; never send a goal from recovery."""
+        self.node._publish_lease(False)
+        self.node._publish_zero()
+        if (not self.hazard_resume_valid(token)
+                or not self.node._cancel_client.service_is_ready()):
+            return False
+        self._hazard_token = None
+        # _recover retains started and the frozen target. The normal preparing
+        # gate proves cancellation and a settle interval before _send is allowed.
+        self._recover(time.monotonic())
+        return True
 
     def request(self):
         n = self.node
@@ -193,7 +270,8 @@ class HomeReturn:
         if self.dock.enabled and self.dock.kind is not None:
             return False, '基站直线段曾中断，请人工恢复位置后重新开始会话，禁止在基站内重新规划'
         if self.pose is None:
-            return False, '本次建图尚未记录有效起点，不能返航'
+            return False, ('当前地图没有有效基站记录，不能回基站；可使用普通导航或回本次初始化位置'
+                           if self.localization else '本次建图尚未记录有效起点，不能返航')
         if not n._home_inputs_ready() or self.current_pose() is None:
             return False, '地图、定位、雷达或Nav2未就绪；保持停车，禁止盲目返航'
         if not n._cancel_client.service_is_ready() or not self.nav.server_is_ready():
@@ -207,6 +285,8 @@ class HomeReturn:
             self.cancel_future = n._cancel_client.call_async(CancelGoal.Request())
             return True, self.message
         self.generation += 1
+        self._hazard_token = None
+        self._return_target = None
         self.phase = 'preparing'
         self.message = '正在暂停探索并等待旧导航取消'
         self.started = time.monotonic()
@@ -221,7 +301,20 @@ class HomeReturn:
         self.cancel_future = n._cancel_client.call_async(CancelGoal.Request())
         return True, '返航请求已接受；将保留当前地图并通过Nav2避障返回'
 
+    def _return_start(self, request, response):
+        # Mapping start is captured before the first movement and saved in the
+        # map frame. Do not overwrite the persisted map/dock metadata.
+        if self.localization or self.phase in self.BUSY:
+            response.success = False
+            response.message = '回建图起点仅在建图会话且无返航任务时可用'
+            return response
+        response.success, response.message = self.request()
+        if response.success:
+            self.return_kind = 'start'
+        return response
+
     def _service(self, request, response):
+        if self.phase not in self.BUSY: self.return_kind = "dock"
         response.success, response.message = self.request()
         return response
 
@@ -267,12 +360,18 @@ class HomeReturn:
         self.cancel_future = self.node._cancel_client.call_async(CancelGoal.Request())
         self.node.get_logger().info(self.message)
 
-    def _send(self):
-        goal = NavigateToPose.Goal()
-        goal.pose = copy.deepcopy(self.pose)
+    def _navigation_target(self):
+        target = copy.deepcopy(self.pose)
         if self.dock.enabled:
             x, y, _ = forward_point(pose_tuple(self.pose), self.dock.distance)
-            goal.pose.pose.position.x, goal.pose.pose.position.y = x, y
+            target.pose.position.x, target.pose.position.y = x, y
+        return target
+
+    def _send(self):
+        goal = NavigateToPose.Goal()
+        if getattr(self, '_return_target', None) is None:
+            self._return_target = self._navigation_target()
+        goal.pose = copy.deepcopy(self._return_target)
         goal.pose.header.stamp = self.node.get_clock().now().to_msg()
         # Bounded recovery, without repeatedly spinning in front of glass.
         goal.behavior_tree = self.node._home_behavior_tree
@@ -333,6 +432,15 @@ class HomeReturn:
 
     def tick(self, healthy):
         now = time.monotonic()
+        if self.phase == 'hazard_suspended':
+            # HazardRecovery owns its zero/reverse channel during this phase.
+            # Do not run the no-motion timer or health-resume logic concurrently.
+            if now - self.started >= self.timeout:
+                self._fail('台阶/近障恢复期间返航总时限已到，已停车')
+            if now - self.last_publish >= .5:
+                self.publish()
+                self.last_publish = now
+            return
         if self.dock.active:
             self.dock.tick(healthy)
             if now-self.last_publish>=.5:
@@ -359,7 +467,7 @@ class HomeReturn:
                 self._save_for_handoff(now)
             self.publish()
             return
-        if self.pose is None:
+        if self.pose is None and not self.localization:
             if self.moved_before_capture:
                 self.phase, self.message = 'unavailable', '记录起点前已移动；本次禁止自动返航'
             elif healthy and home_pose_allowed(
@@ -423,6 +531,15 @@ class HomeReturn:
             self.publish()
             self.last_publish = now
 
+    def mapping_timer(self):
+        # Use the same adjusted monotonic origin as the supervisor timeout.
+        # Recovery wait handlers already move this origin; do not deduct twice.
+        started = getattr(self.node, '_exploration_started_at', None)
+        limit = max(0.0, float(getattr(self.node, '_maximum_duration', 0.0)))
+        elapsed = max(0.0, time.monotonic()-started) if started is not None else 0.0
+        return dict(started=started is not None, limit_s=limit,
+                    remaining_s=max(0.0, limit-elapsed))
+
     def publish(self):
         pose = None
         if self.pose is not None:
@@ -435,8 +552,11 @@ class HomeReturn:
             phase=self.phase, message=self.message, pose=pose,
             available=self.pose is not None, distance_remaining_m=self.distance,
             recovery_count=self.recovery_count, last_health_error=self.last_health_error,
+            explore_status=getattr(self.node,"_last_explore_status","unknown"),
+            motion_stage=(getattr(self,"motion_stage","") if time.monotonic()-getattr(self,"motion_stage_at",0)<.5 else "里程计状态待更新"),
             supervisor_state=self.node._state, auto_return=self.auto_return,
             supervisor_reason=self.node._reason,
+            mapping_timer=self.mapping_timer(),
             dock_enabled=self.dock.enabled, dock_distance_m=self.dock.distance,
             dock_progress_m=self.dock.progress,
             dock_exit_complete=self.dock.exit_complete,
@@ -472,7 +592,7 @@ class HomeReturn:
                 return
             # Both poses retain the saved occupancy map's coordinate system.
             p, q = current.pose.position, current.pose.orientation
-            self.handoff = dict(map_path=n._last_map_prefix+'.yaml', current_pose=dict(
+            self.handoff = dict(return_kind=self.return_kind, map_path=n._last_map_prefix+'.yaml', current_pose=dict(
                 x=p.x, y=p.y, yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))))
             self.phase = 'handoff_ready'
             self.message = '地图保存成功，等待关闭SLAM并启动AMCL导航'

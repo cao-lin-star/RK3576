@@ -120,6 +120,31 @@ def test_cancelled_segment_does_not_restart_or_reset_distance(monkeypatch):
     with pytest.raises(ValueError): d.begin('exit')
 
 
+def test_alignment_reports_observed_false_arrival_position_without_claiming_yaw_failure(monkeypatch):
+    h,d,now=manager(monkeypatch)
+    h.current_pose.return_value=pose(.5+.128738,0,.8)
+    with pytest.raises(ValueError,match='位置偏差12.87cm.*朝向偏差0.800rad待到点后对齐'):
+        d.begin('align')
+    assert not d.active and d.kind is None
+    h.nav.send_goal_async.assert_not_called()
+
+
+def test_precise_staging_does_not_require_heading_before_independent_alignment(monkeypatch):
+    h,d,now=manager(monkeypatch)
+    h.current_pose.return_value=pose(.52,0,.8)
+    d.begin('align')
+    assert d.active and d.kind=='align'
+    h.node._publish_lease.assert_called_with(False)
+
+
+def test_exit_heading_rejection_reports_actual_error_and_stays_stopped(monkeypatch):
+    h,d,now=manager(monkeypatch)
+    h.current_pose.return_value=pose(0,0,.1)
+    with pytest.raises(ValueError,match='位置偏差0.00cm.*朝向偏差0.100rad'):
+        d.begin('exit')
+    assert not d.active and d.kind is None
+
+
 def test_entry_requires_staging_position_and_original_heading(monkeypatch):
     h,d,now=manager(monkeypatch)
     h.current_pose.return_value=pose(.5,0,math.pi)

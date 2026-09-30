@@ -25,7 +25,6 @@ setup(
         "console_scripts": [
             "auto_cmd_vel_limiter = rk3576_footbath_safety.velocity_limiter:main",
             "footbath_command_mux = rk3576_footbath_safety.command_mux:main",
-            "glass_suspect_monitor = rk3576_footbath_safety.glass_monitor:main",
         ],
     },
 )

@@ -175,6 +175,24 @@ bool decode_range_status(const std::vector<uint8_t> & payload, RangeStatusPayloa
   return finite3(output.tof_left_m, output.tof_right_m, output.ultrasonic_m);
 }
 
+bool decode_ultrasonic_three(const std::vector<uint8_t> & payload, UltrasonicThreePayload & output)
+{
+  if (payload.size() != 36U) return false;
+  UltrasonicThreePayload candidate;
+  for (unsigned i=0; i<3; ++i) {
+    const auto *p = payload.data() + 12*i;
+    auto &r = candidate.readings[i];
+    r.distance_m = read_float(p);
+    r.age_ms = read_u32(p+4);
+    r.sequence = read_u16(p+8);
+    r.status = p[10];
+    if (!std::isfinite(r.distance_m) || r.status > 3 || p[11] != 0) return false;
+    if (r.status == 1 && (r.distance_m < 0.02F || r.distance_m > 4.0F)) return false;
+  }
+  output = candidate;
+  return true;
+}
+
 bool decode_imu_raw(const std::vector<uint8_t> & payload, ImuRawPayload & output)
 {
   if (payload.size() != 28U) {

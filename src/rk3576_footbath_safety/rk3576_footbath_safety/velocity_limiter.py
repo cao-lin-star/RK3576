@@ -8,7 +8,7 @@ from geometry_msgs.msg import Twist
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, UInt8
 
 from .logic import clamp_diff_drive, motion_lease_allows
 
@@ -45,6 +45,9 @@ class AutoCmdVelLimiter(Node):
 
         self._publisher = self.create_publisher(Twist, self._output_topic, 10)
         self._recovery_active = False
+        self._escape_mode=0
+        self._escape_at=-math.inf
+        self.create_subscription(UInt8,'/safety/escape_motion',self._on_escape_mode,10)
         self.create_subscription(Bool, '/safety/recovery_active', self._on_recovery_active, 10)
         self.create_subscription(Twist, '/cmd_vel_recovery', self._on_recovery, 10)
         self._diagnostics = self.create_publisher(
@@ -99,14 +102,25 @@ class AutoCmdVelLimiter(Node):
         if bool(message.data) == self._recovery_active:
             return
         self._recovery_active = bool(message.data)
+        self._escape_mode=0
+        self._escape_at=-math.inf
         self._last_command = None
         self._publish_zero()
+
+    def _on_escape_mode(self, message):
+        self._escape_mode=message.data if message.data in (1,2,3) else 0
+        self._escape_at=time.monotonic()
 
     def _on_recovery(self, message):
         if not self._recovery_active:
             return
-        if (not math.isfinite(message.linear.x) or message.angular.z != 0.0
-                or not -.03 <= message.linear.x <= 0.):
+        v,w=message.linear.x,message.angular.z
+        mode=getattr(self,'_escape_mode',0) if time.monotonic()-getattr(self,'_escape_at',-math.inf)<=.3 else 0
+        allowed=(w==0. and -.03<=v<=0.)
+        if mode==1: allowed=(v==0. and abs(w)<=.12)
+        elif mode in (2,3):
+            allowed=(-.03<=v<0. if mode==2 else 0.<v<=.03) and abs(w)<=min(.12,abs(v)*4.)
+        if not all(math.isfinite(x) for x in (v,w)) or not allowed:
             self._last_command = None
             self._publish_zero()
             return

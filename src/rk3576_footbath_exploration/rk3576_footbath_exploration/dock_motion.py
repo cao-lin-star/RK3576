@@ -180,7 +180,17 @@ class DockMotion:
                 self.cross_limit,.06)
         elif (math.hypot(point[0]-target[0],point[1]-target[1])>.04
                 or (kind!='align' and abs(wrap(point[2]-target[2]))>.06)):
-            raise ValueError('基站出入口未对齐（位置需≤4cm、朝向≤0.06rad），保持停车')
+            position_error=math.hypot(point[0]-target[0],point[1]-target[1])
+            heading_error=abs(wrap(point[2]-target[2]))
+            if kind=='align':
+                # Alignment has not started: heading error is expected here.
+                # Report the actual failed position gate, not a fictitious yaw gate.
+                raise ValueError(
+                    f'尚未到基站等待点：位置偏差{position_error*100:.2f}cm（需≤4cm），'
+                    f'朝向偏差{heading_error:.3f}rad待到点后对齐；保持停车')
+            raise ValueError(
+                f'基站出入口未对齐：位置偏差{position_error*100:.2f}cm（需≤4cm）、'
+                f'朝向偏差{heading_error:.3f}rad（需≤0.06rad），保持停车')
         self.kind=kind
         self.direction=0 if kind=='align' else (1 if kind=='exit' else -1)
         self.align_target=target

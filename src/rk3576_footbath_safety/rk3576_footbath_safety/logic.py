@@ -1,7 +1,7 @@
 """Pure safety calculations shared by ROS nodes and host tests."""
 
 import math
-from typing import Iterable, Optional, Tuple
+from typing import Optional, Tuple
 
 
 Command = Tuple[float, float]
@@ -86,63 +86,3 @@ def select_fresh_command(
     if command_is_fresh(now_s, auto_stamp_s, auto_timeout_s):
         return "auto", auto_command
     return "none", (0.0, 0.0)
-
-
-def front_sector_minimum(
-    ranges: Iterable[float],
-    angle_min: float,
-    angle_increment: float,
-    range_min: float,
-    range_max: float,
-    half_angle: float,
-) -> float:
-    """Return the nearest finite return in a forward sector, or +inf."""
-    if not math.isfinite(angle_min) or not math.isfinite(angle_increment):
-        return math.inf
-    if angle_increment <= 0.0 or half_angle <= 0.0:
-        return math.inf
-    nearest = math.inf
-    for index, value in enumerate(ranges):
-        angle = normalize_angle(angle_min + index * angle_increment)
-        if abs(angle) > half_angle or not math.isfinite(value):
-            continue
-        if value < range_min or value > range_max:
-            continue
-        nearest = min(nearest, value)
-    return nearest
-
-
-def held_detection_active(
-    now: float,
-    last_detected: float | None,
-    hold_time: float,
-) -> bool:
-    """Return true while a prior detection remains inside its hold window."""
-    if hold_time < 0.0:
-        raise ValueError("hold_time must be non-negative")
-    if last_detected is None or now < last_detected:
-        return False
-    return now - last_detected <= hold_time
-
-
-def suspected_glass(
-    ultrasonic_range: float,
-    high_lidar_min: float,
-    low_lidar_min: float,
-    ultrasonic_trigger_max: float,
-    correspondence_margin: float,
-) -> bool:
-    """Detect a diagnostic-only ultrasonic/lidar distance disagreement."""
-    if not math.isfinite(ultrasonic_range):
-        return False
-    if ultrasonic_range <= 0.0 or ultrasonic_range > ultrasonic_trigger_max:
-        return False
-    high_matches = (
-        math.isfinite(high_lidar_min)
-        and abs(high_lidar_min - ultrasonic_range) <= correspondence_margin
-    )
-    low_matches = (
-        math.isfinite(low_lidar_min)
-        and abs(low_lidar_min - ultrasonic_range) <= correspondence_margin
-    )
-    return not high_matches and not low_matches

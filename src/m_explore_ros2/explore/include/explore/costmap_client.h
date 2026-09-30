@@ -68,7 +68,8 @@ public:
    * @brief Get the pose of the robot in the global frame of the costmap
    * @return pose of the robot in the global frame of the costmap
    */
-  geometry_msgs::msg::Pose getRobotPose() const;
+  geometry_msgs::msg::Pose getRobotPose(bool* valid = nullptr) const;
+  bool mapFresh() const { const double age=node_.now().seconds()-map_at_; return age>=0. && age<=5.; }
 
   /**
    * @brief Return a pointer to the "master" costmap which receives updates from
@@ -115,6 +116,7 @@ protected:
   void updatePartialMap(const map_msgs::msg::OccupancyGridUpdate::SharedPtr msg);
 
   nav2_costmap_2d::Costmap2D costmap_;
+  double map_at_{-1.};
   bool costmap_received_ = false;  ///< @brief Flag indicating whether costmap
                                    ///< callback has been called
 

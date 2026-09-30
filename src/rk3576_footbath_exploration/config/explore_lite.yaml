@@ -8,6 +8,7 @@
     return_to_init: false
     start_paused: true
     visualize: true
+    require_health_lease: true
     planner_frequency: 0.20
     # Allow Nav2's 30s progress checker to act before bounded frontier retries.
     progress_timeout: 45.0

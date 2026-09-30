@@ -34,6 +34,8 @@ install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_recovery_gate test/test_recovery_gate.cpp)
+  target_include_directories(test_recovery_gate PRIVATE include)
   ament_add_gtest(test_protocol test/test_protocol.cpp)
   target_link_libraries(test_protocol footbath_protocol)
   target_include_directories(test_protocol PRIVATE include)

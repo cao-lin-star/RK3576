@@ -36,6 +36,9 @@ enum class MessageType : uint8_t
   kRangeStatus = 0x05,
   kImuRaw = 0x06,
   kControlSource = 0x07,
+  kUltrasonicThree = 0x08,
+  kSideUltrasonicConfig = 0x09,
+  kSideUltrasonicState = 0x0A,
 };
 
 struct Frame
@@ -83,6 +86,15 @@ struct ImuRawPayload
   float gyro_y_rps{0.0F};
   float gyro_z_rps{0.0F};
 };
+
+struct UltrasonicReading {
+  float distance_m{0};
+  uint32_t age_ms{0};
+  uint16_t sequence{0};
+  uint8_t status{0}; // 0 uninitialized, 1 echo, 2 no echo, 3 fault
+};
+struct UltrasonicThreePayload { UltrasonicReading readings[3]; };
+bool decode_ultrasonic_three(const std::vector<uint8_t> &, UltrasonicThreePayload &);
 
 struct Quaternion
 {

@@ -1,3 +1,5 @@
+#include "rk3576_footbath_base/recovery_gate.hpp"
+#include <cstdlib>
 // Copyright 2026 sky
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,6 +42,9 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/range.hpp>
 #include <std_msgs/msg/u_int8.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <limits>
+#include <sstream>
 
 #include "rk3576_footbath_base/protocol.hpp"
 
@@ -124,7 +129,15 @@ public:
 
     odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>(odom_topic_, rclcpp::QoS(20));
     source_publisher_ = create_publisher<std_msgs::msg::UInt8>("/chassis/control_source", 10);
+    const char *side_env = std::getenv("FOOTBATH_SIDE_ULTRASONIC_ENABLED");
+    side_enabled_ = !side_env || std::string(side_env) != "0";
+    side_state_pub_ = create_publisher<std_msgs::msg::UInt8>("/chassis/side_ultrasonic_enabled", 10);
+    us_status_pub_ = create_publisher<std_msgs::msg::String>("/ultrasonic/status", 10);
+    const char *us_topics[3] = {"/range/ultrasonic_front_observe", "/range/ultrasonic_left", "/range/ultrasonic_right"};
+    for (unsigned i=0;i<3;++i)
+      us_pubs_[i] = create_publisher<sensor_msgs::msg::Range>(us_topics[i], rclcpp::SensorDataQoS());
     imu_publisher_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS());
+    tof_state_publisher_ = create_publisher<std_msgs::msg::UInt8>("/chassis/tof_state", 10);
     tof_left_publisher_ =
       create_publisher<sensor_msgs::msg::Range>(tof_left_topic_, rclcpp::SensorDataQoS());
     tof_right_publisher_ =
@@ -189,6 +202,7 @@ private:
     parser_ = StreamParser{};
     connected_since_ = std::chrono::steady_clock::now();
     last_heartbeat_ = {};
+    side_confirmed_ = false;
     heartbeat_stale_stop_sent_ = false;
     RCLCPP_INFO(get_logger(), "Connected to STM32 on %s", port_.c_str());
     send_stop("serial link connected; clear stale motion");
@@ -238,6 +252,7 @@ private:
 
   void send_stop(const char * reason)
   {
+    recovery_gate_.arm();
     if (fd_ >= 0 && write_bytes(encode_stop(tx_sequence_++))) {
       ++stop_count_;
       RCLCPP_WARN(get_logger(), "STOP sent: %s", reason);
@@ -246,6 +261,11 @@ private:
 
   void on_cmd_vel(const geometry_msgs::msg::Twist::SharedPtr message)
   {
+    if (!side_confirmed_ || std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - side_seen_).count() > 0.6) {
+      send_stop("side sonar configuration unconfirmed");
+      return;
+    }
     last_cmd_vel_ = std::chrono::steady_clock::now();
     received_cmd_vel_ = true;
     timeout_stop_sent_ = false;
@@ -254,8 +274,9 @@ private:
       send_stop("cmd_vel contains NaN or Inf");
       return;
     }
-    const double linear = std::clamp(message->linear.x, -max_linear_mps_, max_linear_mps_);
-    const double angular = std::clamp(message->angular.z, -max_angular_rps_, max_angular_rps_);
+    const bool recovery_blocked = recovery_gate_.blocked(steady_seconds());
+    const double linear = recovery_blocked ? 0. : std::clamp(message->linear.x, -max_linear_mps_, max_linear_mps_);
+    const double angular = recovery_blocked ? 0. : std::clamp(message->angular.z, -max_angular_rps_, max_angular_rps_);
     if (linear != message->linear.x || angular != message->angular.z) {
       ++clamped_cmd_count_;
     }
@@ -263,6 +284,7 @@ private:
         encode_cmd_vel(tx_sequence_++, static_cast<float>(linear), static_cast<float>(angular))))
     {
       ++cmd_vel_tx_count_;
+      if(linear==0. && angular==0.) recovery_gate_.neutral_sent();
     }
   }
 
@@ -282,6 +304,26 @@ private:
     }
 
     read_available();
+    if (fd_ >= 0 && recovery_gate_.blocked(steady_seconds()) &&
+        steady_seconds()-last_recovery_zero_>=.05) {
+      if(write_bytes(encode_cmd_vel(tx_sequence_++,0.f,0.f))) {
+        recovery_gate_.neutral_sent();
+        last_recovery_zero_=steady_seconds();
+      }
+    }
+    if (side_confirmed_ && std::chrono::duration<double>(steady_now - side_seen_).count() > 0.6) {
+      side_confirmed_ = false;
+      send_stop("side sonar configuration feedback stale");
+    }
+    if (!side_confirmed_ && fd_ >= 0 && steady_now >= side_retry_) {
+      send_stop("waiting for stationary side sonar configuration");
+      Frame config;
+      config.message_type = static_cast<uint8_t>(MessageType::kSideUltrasonicConfig);
+      config.sequence = tx_sequence_++;
+      config.payload = {1U, static_cast<uint8_t>(side_enabled_)};
+      write_bytes(encode_frame(config));
+      side_retry_ = steady_now + 500ms;
+    }
     if (fd_ < 0) {
       return;
     }
@@ -336,6 +378,16 @@ private:
     }
     ++rx_frame_count_;
     switch (static_cast<MessageType>(frame.message_type)) {
+      case MessageType::kSideUltrasonicState: {
+          if (frame.payload.size() == 1 && frame.payload[0] <= 1) {
+            side_seen_ = std::chrono::steady_clock::now();
+            side_confirmed_ = frame.payload[0] == static_cast<uint8_t>(side_enabled_);
+            std_msgs::msg::UInt8 state;
+            state.data = frame.payload[0];
+            side_state_pub_->publish(state);
+          }
+          break;
+        }
       case MessageType::kOdom: {
           OdomPayload odom;
           if (!decode_odom(frame.payload, odom)) {
@@ -358,6 +410,7 @@ private:
           mcu_uptime_ms_ = heartbeat.uptime_ms;
           const uint16_t previous_fault = fault_flags_;
           fault_flags_ = heartbeat.fault_flags;
+          recovery_gate_.heartbeat(steady_seconds(),fault_flags_);
           if (stop_on_fault_ && fault_flags_ != 0U && previous_fault == 0U) {
             send_stop("MCU reported fault flags");
           }
@@ -373,6 +426,33 @@ private:
             sensor_fault_flags_ = ranges.sensor_fault_flags;
             publish_ranges(ranges);
           }
+          break;
+        }
+      case MessageType::kUltrasonicThree: {
+          UltrasonicThreePayload readings;
+          if (!decode_ultrasonic_three(frame.payload, readings)) { ++payload_error_count_; break; }
+          const char *frames[3] = {"ultrasonic_link", "ultrasonic_left_link", "ultrasonic_right_link"};
+          std::ostringstream json;
+          json << "{\"observation_only\":false,\"readings\":[";
+          for (unsigned i=0;i<3;++i) {
+            const auto &r=readings.readings[i];
+            if (i) json << ',';
+            json << "{\"distance_m\":" << r.distance_m << ",\"status\":" << unsigned(r.status)
+                 << ",\"age_ms\":" << r.age_ms << ",\"sequence\":" << r.sequence << '}';
+            if (!us_seen_[i] || us_seq_[i]!=r.sequence || us_state_[i]!=r.status) {
+              sensor_msgs::msg::Range msg;
+              msg.header.stamp = now() - rclcpp::Duration::from_seconds(std::min(r.age_ms,60000U)/1000.0);
+              msg.header.frame_id=frames[i]; msg.radiation_type=sensor_msgs::msg::Range::ULTRASOUND;
+              msg.field_of_view=0.50F; msg.min_range=0.02F; msg.max_range=4.0F;
+              // No echo is UNKNOWN, never ray-clears side costmaps. Faults/stale
+              // samples are suppressed so layer freshness forces navigation to stop.
+              msg.range=(r.status==1 && r.age_ms<=600U) ? r.distance_m : std::numeric_limits<float>::quiet_NaN();
+              if ((r.status==1 || r.status==2) && r.age_ms<=600U) us_pubs_[i]->publish(msg);
+              us_seen_[i]=true; us_seq_[i]=r.sequence; us_state_[i]=r.status;
+            }
+          }
+          json << "]}";
+          std_msgs::msg::String message; message.data=json.str(); us_status_pub_->publish(message);
           break;
         }
       case MessageType::kControlSource: {
@@ -452,15 +532,19 @@ private:
 
   void publish_ranges(const RangeStatusPayload & ranges)
   {
+    // bits 0/1: valid measurement; bits 2/3: recent checksum-valid sensor frame.
+    std_msgs::msg::UInt8 tof_state;
+    tof_state.data = (ranges.valid_flags & 3U) | ((ranges.valid_flags >> 2U) & 12U);
+    tof_state_publisher_->publish(tof_state);
     if ((ranges.valid_flags & kValidTofLeft) != 0U) {
       publish_one_range(
         ranges.tof_left_m, tof_left_frame_, sensor_msgs::msg::Range::INFRARED,
-        0.05F, 0.02F, 12.0F, tof_left_publisher_);
+        0.05F, 0.015F, 4.0F, tof_left_publisher_);
     }
     if ((ranges.valid_flags & kValidTofRight) != 0U) {
       publish_one_range(
         ranges.tof_right_m, tof_right_frame_, sensor_msgs::msg::Range::INFRARED,
-        0.05F, 0.02F, 12.0F, tof_right_publisher_);
+        0.05F, 0.015F, 4.0F, tof_right_publisher_);
     }
     if ((ranges.valid_flags & kValidUltrasonic) != 0U) {
       publish_one_range(
@@ -557,6 +641,9 @@ private:
   int baud_{115200};
   double reconnect_period_s_{1.0};
   double cmd_timeout_s_{0.5};
+  bool side_enabled_{true}, side_confirmed_{false};
+  std::chrono::steady_clock::time_point side_seen_{}, side_retry_{};
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr side_state_pub_;
   double heartbeat_timeout_s_{2.0};
   double max_linear_mps_{1.0};
   double max_angular_rps_{1.5};
@@ -569,6 +656,11 @@ private:
   std::string tof_left_frame_;
   std::string tof_right_frame_;
   std::string ultrasonic_frame_;
+  rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr us_pubs_[3];
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr us_status_pub_;
+  bool us_seen_[3]{false,false,false};
+  uint16_t us_seq_[3]{0,0,0};
+  uint8_t us_state_[3]{0,0,0};
   std::string cmd_vel_topic_;
   std::string odom_topic_;
   std::string imu_topic_;
@@ -581,6 +673,11 @@ private:
   int fd_{-1};
   StreamParser parser_;
   uint16_t tx_sequence_{0};
+  static double steady_seconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  footbath::RecoveryGate recovery_gate_;
+  double last_recovery_zero_{-1};
   uint16_t fault_flags_{0};
   uint16_t valid_sensor_flags_{0};
   uint8_t obstacle_flags_{0};
@@ -615,6 +712,7 @@ private:
 
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr tof_state_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr tof_left_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr tof_right_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr ultrasonic_publisher_;

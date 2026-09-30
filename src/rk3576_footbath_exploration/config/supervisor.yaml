@@ -24,6 +24,8 @@ exploration_supervisor:
       align_map_hard_limit_m: 0.08
       align_odom_hard_limit_m: 0.05
       staging_longitudinal_tolerance_m: 0.06
+    retreat:
+      maximum_distance_m: 1.0  # recorded straight path only, 0.03 m/s, live rear lidar
     return_home:
       on_complete: true
       timeout_s: 300.0

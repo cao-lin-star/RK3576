@@ -81,6 +81,10 @@ def generate_launch_description():
         "ultrasonic_y": str(geometry["ultrasonic_y_m"]),
         "ultrasonic_z": str(geometry["ultrasonic_z_m"]),
         "ultrasonic_yaw": str(geometry["ultrasonic_yaw_rad"]),
+        "ultrasonic_side_x": str(geometry["ultrasonic_side_x_m"]),
+        "ultrasonic_side_y": str(geometry["ultrasonic_side_y_m"]),
+        "ultrasonic_side_z": str(geometry["ultrasonic_side_z_m"]),
+        "ultrasonic_side_yaw": str(geometry["ultrasonic_side_yaw_rad"]),
         "use_sim_time": LaunchConfiguration("use_sim_time"),
     }
 
@@ -182,7 +186,6 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(safety_dir, "launch", "safety.launch.py")),
             launch_arguments={
-                "start_glass_monitor": "true",
                 "start_auto_limiter": "false",
                 "start_command_mux": "true",
             }.items(),

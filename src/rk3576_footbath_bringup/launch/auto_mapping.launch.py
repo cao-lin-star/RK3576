@@ -100,7 +100,6 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(safety_dir, "launch", "safety.launch.py")),
             launch_arguments={
-                "start_glass_monitor": "false",
                 "start_auto_limiter": "true",
                 "auto_limiter_require_lease": "true",
                 "start_command_mux": "false",

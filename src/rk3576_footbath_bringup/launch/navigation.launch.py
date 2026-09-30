@@ -37,6 +37,7 @@ def generate_launch_description():
         DeclareLaunchArgument("headless", default_value="true"),
         DeclareLaunchArgument("map", default_value=default_map),
         DeclareLaunchArgument("return_session", default_value="false"),
+        DeclareLaunchArgument("return_dock", default_value="true"),
         DeclareLaunchArgument("depart_from_dock", default_value="true"),
         DeclareLaunchArgument("home_pose_json", default_value="{}"),
         Node(
@@ -45,6 +46,7 @@ def generate_launch_description():
             parameters=[os.path.join(get_package_share_directory("rk3576_footbath_exploration"),
                                      "config", "supervisor.yaml"),
                         {"auto_start": False, "return_home.localization_mode": True,
+                         "dock.enabled": ParameterValue(LaunchConfiguration("return_dock"), value_type=bool),
                          "hazard_recovery.map_file": LaunchConfiguration("map"),
                          "dock.departure_required": ParameterValue(
                              LaunchConfiguration("depart_from_dock"), value_type=bool),
@@ -72,7 +74,6 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(safety_dir, "launch", "safety.launch.py")),
             launch_arguments={
-                "start_glass_monitor": "false",
                 "start_auto_limiter": "true",
                 "auto_limiter_require_lease": "true",
                 "start_command_mux": "false",

@@ -46,6 +46,12 @@ from .health import validate_occupancy_grid
 from .health import validate_odometry
 
 
+def home_behavior_tree_name(dock_enabled):
+    """Only dock staging needs position-only precise arrival before alignment."""
+    return ('home_return_precise.xml' if dock_enabled
+            else 'normal_limited_recovery.xml')
+
+
 class ExplorationSupervisor(Node):
     """Start exploration only after inputs are fresh and stop on faults."""
 
@@ -203,10 +209,10 @@ class ExplorationSupervisor(Node):
             for name in ('planner_server', 'controller_server', 'bt_navigator')
         }
         self._nav_timer = self.create_timer(1.0, self._poll_navigation)
+        self.home = HomeReturn(self)
         self._home_behavior_tree = os.path.join(
             get_package_share_directory('rk3576_footbath_exploration'),
-            'behavior_trees', 'exploration_limited_recovery.xml')
-        self.home = HomeReturn(self)
+            'behavior_trees', home_behavior_tree_name(self.home.dock.enabled))
         self.hazard = HazardRecovery(self)
         if self.home.localization:
             self._auto_start = False
@@ -277,11 +283,17 @@ class ExplorationSupervisor(Node):
 
     def _status_callback(self, message: ExploreStatus) -> None:
         self._last_explore_status = message.status
+        if message.status == 'escape_requested' and self._state == self.RUNNING:
+            self.hazard.escape_requested = True
+            self._reason = '检测到往返或导航受阻，正在准备沿原路退出'
+            self._publish_lease(False)
+            self._publish_zero()
+            return
         if message.status == 'exploration_blocked' and self._state == self.RUNNING:
             self._fault_latched = True
             self._pause(self.PAUSED_FAULT, '探索无实际进展或剩余目标受阻，已停车；请人工检查后继续')
             return
-        if message.status == ExploreStatus.EXPLORATION_COMPLETE:
+        if message.status in (ExploreStatus.EXPLORATION_COMPLETE, 'exploration_complete_with_unreachable'):
             if self._state == self.COMPLETE:
                 return
             if self._state != self.RUNNING:
@@ -298,7 +310,7 @@ class ExplorationSupervisor(Node):
                     self.home.message = '自动返航未启动: ' + reason
                     self.get_logger().warning('Auto-return not started: ' + reason)
             if not returning:
-                self._pause(self.COMPLETE, "explore_lite reported no frontiers")
+                self._pause(self.COMPLETE, '可达区域探索完成，存在不可达区域' if message.status == 'exploration_complete_with_unreachable' else '可达区域探索完成')
             if self._save_on_complete and not returning:
                 self._request_map_save("exploration complete")
 
@@ -318,32 +330,40 @@ class ExplorationSupervisor(Node):
 
     def _publish_lease(self, allowed: bool) -> None:
         message = Bool()
-        message.data = allowed
+        message.data = allowed and not (hasattr(self, "hazard") and self.hazard.overlay.motion_blocked())
         self._lease_publisher.publish(message)
 
     def _publish_zero(self) -> None:
         self._stop_publisher.publish(Twist())
 
     def _cancel_navigation(self) -> None:
+        self._overlay_cancel_future = None
+        self._overlay_cancel_at = time.monotonic()
         if not self._cancel_client.service_is_ready():
             self.get_logger().warning(
                 "NavigateToPose cancel service is not ready: "
                 f"{self._cancel_service_name}"
             )
             return
-        self._cancel_client.call_async(CancelGoal.Request())
+        self._overlay_cancel_future = self._cancel_client.call_async(CancelGoal.Request())
 
     def _pause(self, state: str, reason: str) -> None:
-        if state not in ('return_preparing', 'returning_home'):
+        previous_state = self._state
+        hazard = getattr(self, 'hazard', None)
+        if hazard is not None and hazard.active and state != 'hazard_recovery':
+            hazard.cancel(reason)
+        preserve_return = state == 'hazard_recovery' and self.home.phase == 'hazard_suspended'
+        if state not in ('return_preparing', 'returning_home') and not preserve_return:
             self.home.interrupt(reason)
-        was_running = self._state == self.RUNNING
         self._state = state
         self._reason = reason
         self._publish_pause(force=True)
         self._publish_lease(False)
         self._publish_zero()
-        if state != 'return_preparing' and (
-                was_running or state in (self.COMPLETE, self.TIMED_OUT)):
+        if state not in ('return_preparing', 'hazard_recovery') and (
+                previous_state in (self.RUNNING, 'returning_home', 'navigation_ready',
+                                   'hazard_recovery', 'dock_motion') or
+                state in (self.COMPLETE, self.TIMED_OUT, self.PAUSED_OPERATOR, self.PAUSED_FAULT)):
             self._cancel_navigation()
         self.get_logger().warning(f"Exploration paused: {reason}")
 
@@ -382,6 +402,8 @@ class ExplorationSupervisor(Node):
             for name in self._nav_clients)
 
     def _begin_exploration(self) -> None:
+        if self.hazard.overlay.motion_blocked():
+            return False
         dock = self.home.dock
         if self.home.navigation_session and dock.exit_complete:
             self._state = 'navigation_ready'
@@ -399,13 +421,18 @@ class ExplorationSupervisor(Node):
         self._state = self.RUNNING
         self._reason = "health gate passed"
         self._fault_latched = False
-        self._exploration_started_at = time.monotonic()
+        if self._exploration_started_at is None:
+            self._exploration_started_at = time.monotonic()
         self._publish_resume()
         self._publish_lease(True)
         self.get_logger().info("Exploration resumed after health gate passed")
         return True
 
     def _start_service(self, _request: Trigger.Request, response: Trigger.Response):
+        if self.hazard.overlay.motion_blocked():
+            response.success = False
+            response.message = '障碍编辑尚未获代价地图确认，请保持暂停'
+            return response
         if self.hazard.active:
             response.success = False
             response.message = '正在危险恢复，不能重复启动探索'
@@ -661,6 +688,9 @@ class ExplorationSupervisor(Node):
             self._key_value("reason", self._reason),
             self._key_value("inputs_healthy", healthy),
             self._key_value("input_ages", self._format_ages()),
+            self._key_value("localization_age_s", getattr(self.home, 'pose_age', None)),
+            self._key_value("localization_error", getattr(self.home, 'pose_error', '')),
+            self._key_value("obstacle_count", len(self.hazard.zones)),
             self._key_value("explore_status", self._last_explore_status),
             self._key_value("fault_latched", self._fault_latched),
             self._key_value(
@@ -669,6 +699,14 @@ class ExplorationSupervisor(Node):
             ),
             self._key_value("save_state", self._save_state),
             self._key_value("last_map_prefix", self._last_map_prefix),
+            self._key_value("tof_state", self.hazard.tof_state),
+            self._key_value("hazard_owner", self.hazard.owner or 'none'),
+            self._key_value("hazard_phase", self.hazard.phase),
+            self._key_value("hazard_kind", getattr(self.hazard, 'kind', 'none')),
+            self._key_value("hazard_near_sources", ",".join(sorted(self.hazard.near_sources(time.monotonic())))),
+            self._key_value("hazard_attempts", self.hazard.attempts),
+            self._key_value("hazard_fault_flags", self.hazard.fault),
+            self._key_value("hazard_ranges", {k: v[0] for k, v in self.hazard.ranges.items()}),
         ]
         for name in ("scan", "map", "odom"):
             status.values.extend([

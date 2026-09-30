@@ -107,4 +107,19 @@
     <origin xyz="$(arg ultrasonic_x) $(arg ultrasonic_y) $(arg ultrasonic_z)"
       rpy="0 0 $(arg ultrasonic_yaw)"/>
   </joint>
+  <!-- User-confirmed 45deg mounts recessed 0.10m along the beam from 0.22m body radius. -->
+  <xacro:arg name="ultrasonic_side_x" default="0.084853"/>
+  <xacro:arg name="ultrasonic_side_y" default="0.084853"/>
+  <xacro:arg name="ultrasonic_side_z" default="0.24"/>
+  <xacro:arg name="ultrasonic_side_yaw" default="0.785398"/>
+  <link name="ultrasonic_left_link"/>
+  <joint name="ultrasonic_left_joint" type="fixed">
+    <parent link="base_footprint"/><child link="ultrasonic_left_link"/>
+    <origin xyz="$(arg ultrasonic_side_x) $(arg ultrasonic_side_y) $(arg ultrasonic_side_z)" rpy="0 0 $(arg ultrasonic_side_yaw)"/>
+  </joint>
+  <link name="ultrasonic_right_link"/>
+  <joint name="ultrasonic_right_joint" type="fixed">
+    <parent link="base_footprint"/><child link="ultrasonic_right_link"/>
+    <origin xyz="$(arg ultrasonic_side_x) -$(arg ultrasonic_side_y) $(arg ultrasonic_side_z)" rpy="0 0 -$(arg ultrasonic_side_yaw)"/>
+  </joint>
 </robot>

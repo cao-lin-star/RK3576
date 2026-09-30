@@ -44,6 +44,11 @@ robot_geometry:
   ultrasonic_y_m: 0.0
   ultrasonic_z_m: 0.24
   ultrasonic_yaw_rad: 0.0
+  # 0.22m radius minus 0.10m inward recess, at +/-45deg.
+  ultrasonic_side_x_m: 0.084853
+  ultrasonic_side_y_m: 0.084853
+  ultrasonic_side_z_m: 0.24
+  ultrasonic_side_yaw_rad: 0.7853981634
 
 kinematics:
   drive: differential

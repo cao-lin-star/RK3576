@@ -1,0 +1,5 @@
+<library path="footbath_explore_controller">
+  <class name="footbath::ExploreController" type="footbath::ExploreController" base_class_type="nav2_core::Controller">
+    <description>Bounded initial heading alignment before DWB exploration tracking.</description>
+  </class>
+</library>

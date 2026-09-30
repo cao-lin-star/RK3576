@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from rk3576_footbath_exploration.home_return import HomeReturn, home_pose_allowed
-from rk3576_footbath_exploration.supervisor import ExplorationSupervisor
+from rk3576_footbath_exploration.supervisor import ExplorationSupervisor, home_behavior_tree_name
 
 
 @pytest.mark.parametrize('first,current,seconds,allowed', [
@@ -18,6 +18,14 @@ from rk3576_footbath_exploration.supervisor import ExplorationSupervisor
 ])
 def test_capture_only_at_stationary_start(first, current, seconds, allowed):
     assert home_pose_allowed(first, current, seconds) is allowed
+
+
+@pytest.mark.parametrize('dock_enabled,filename', [
+    (True, 'home_return_precise.xml'),
+    (False, 'normal_limited_recovery.xml'),
+])
+def test_precise_profile_only_for_dock_staging(dock_enabled, filename):
+    assert home_behavior_tree_name(dock_enabled) == filename
 
 
 def manager():
@@ -78,6 +86,24 @@ def test_mapping_return_requests_save_not_navigation():
     assert h.phase == 'saving_map'
     h.nav.send_goal_async.assert_not_called()
     h.node._publish_lease.assert_not_called()
+
+
+def test_mapping_handoff_never_sends_precise_goal_in_single_controller_stack(monkeypatch):
+    h = manager()
+    h.localization = False
+    h.publish = Mock()
+    h._save_for_handoff = Mock()
+    h._send = Mock()
+    monkeypatch.setattr('rk3576_footbath_exploration.home_return.time.monotonic', lambda: 100)
+    assert h.request()[0]
+    for phase in ('saving_map', 'handoff_ready'):
+        h.phase = phase
+        for healthy in (False, True, False, True):
+            h.tick(healthy)
+            assert h.phase == phase
+    h._send.assert_not_called()
+    h.nav.send_goal_async.assert_not_called()
+    h.node._publish_lease.assert_called_with(False)
 
 
 def test_failed_save_never_requests_handoff():

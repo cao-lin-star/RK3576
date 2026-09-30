@@ -23,6 +23,33 @@
 
 namespace fb = rk3576_footbath_base;
 
+TEST(UltrasonicThree, RejectsMalformedAndNonFinite) {
+  fb::UltrasonicThreePayload result;
+  std::vector<uint8_t> p(36,0);
+  EXPECT_TRUE(fb::decode_ultrasonic_three(p,result));
+  p[10]=4; EXPECT_FALSE(fb::decode_ultrasonic_three(p,result)); p[10]=0;
+  p[11]=1; EXPECT_FALSE(fb::decode_ultrasonic_three(p,result)); p[11]=0;
+  p[2]=0x80; p[3]=0x7f; EXPECT_FALSE(fb::decode_ultrasonic_three(p,result));
+  p.resize(35); EXPECT_FALSE(fb::decode_ultrasonic_three(p,result));
+}
+
+TEST(UltrasonicThree, DecodesChannelsAgesSequenceAndStatus) {
+  fb::UltrasonicThreePayload result;
+  std::vector<uint8_t> p(36,0);
+  for(unsigned i=0;i<3;++i) {
+    float v=0.5F+float(i); std::memcpy(p.data()+12*i,&v,4);
+    p[12*i+4]=80; p[12*i+8]=254; p[12*i+9]=255; p[12*i+10]=1;
+  }
+  EXPECT_TRUE(fb::decode_ultrasonic_three(p,result));
+  EXPECT_FLOAT_EQ(result.readings[2].distance_m,2.5F);
+  EXPECT_EQ(result.readings[1].age_ms,80U);
+  EXPECT_EQ(result.readings[0].sequence,65534U);
+  p[22]=2; EXPECT_TRUE(fb::decode_ultrasonic_three(p,result));
+  EXPECT_EQ(result.readings[1].status,2U);
+  float zero=0;std::memcpy(p.data(),&zero,4);
+  EXPECT_FALSE(fb::decode_ultrasonic_three(p,result));
+}
+
 namespace
 {
 void append_u16(std::vector<uint8_t> & output, uint16_t value)

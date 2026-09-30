@@ -43,7 +43,7 @@ def test_map_view_controls_and_inverse_transform_contract():
     assert "function changeZoom(factor)" in js
     assert "function rotateMap(degrees)" in js
     assert "function resetMapView()" in js
-    assert "mapView.rotation-pose.yaw" in js
+    assert "mapView.rotation+(state?.map?.origin_yaw||0)-pose.yaw" in js
     assert "(-sx*v.sin+sy*v.cos)/v.scale" in js
     assert "setTimeout(loop,1000)" in js
     assert "lastMapLoad>4000" in js
